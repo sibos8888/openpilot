@@ -25,9 +25,7 @@ class FakeHardware:
     self.polls_since_reset = 0
 
   def recover_internal_panda(self):
-    # 走到这里就是回归（旧代码在这里进 DFU 重刷）：结束主循环让断言报错，而不是无限转圈
     self.calls.append("recover")
-    Loop.send_sigint_to_self()
 
 
 class FakeProcess:
@@ -47,37 +45,82 @@ class FakeProcess:
 
 
 class Loop:
-  """把 main() 的所有外部依赖换成假件；panda 在复位后第 boot_polls 次枚举才出现。"""
+  """Exercise the real recovery loop with simulated firmware and process lifecycle."""
 
-  def __init__(self, monkeypatch, boot_polls=3):
+  def __init__(self, monkeypatch, boot_polls=3, needs_flash=False, legacy_protocol=False):
     self.hardware = FakeHardware()
     self.processes: list[FakeProcess] = []
     self.flashed: list[str] = []
+    self.dfu_recoveries = 0
+    self.current = not needs_flash
+    self.protocol_ready = not legacy_protocol
+    self.bootstub = False
+    self.on_flash = None
+    self.on_popen = None
+    self.on_wait = self.send_sigint_to_self
     hardware = self.hardware
+    loop = self
 
     class SlowBootPanda(Panda):
+      def __init__(self, serial=None, **kwargs):
+        self.serial = serial
+        self.bootstub = loop.bootstub
+
+      def close(self):
+        pass
+
+      def get_type(self):
+        return next(iter(Panda.SUPPORTED_DEVICES))
+
+      def get_version(self):
+        return "test firmware"
+
+      def up_to_date(self):
+        return loop.current
+
+      def flash(self):
+        loop.flashed.append(self.serial)
+        loop.current = True
+        loop.bootstub = False
+        if loop.on_flash:
+          loop.on_flash()
+
+      @staticmethod
+      def wait_for_dfu(serial, timeout):
+        return "recover" in hardware.calls
+
       @classmethod
       def list(cls, usb_only=False):
         hardware.polls_since_reset += 1
-        return [SERIAL] if "reset" in hardware.calls and hardware.polls_since_reset >= boot_polls else []
+        ready = loop.protocol_ready and "reset" in hardware.calls and hardware.polls_since_reset >= boot_polls
+        return [SERIAL] if ready else []
+
+    class FakeDFU:
+      def __init__(self, serial):
+        pass
+
+      def __enter__(self):
+        return self
+
+      def __exit__(self, *args):
+        pass
+
+      def recover(self):
+        loop.dfu_recoveries += 1
+        loop.protocol_ready = True
+        loop.bootstub = True
 
     monkeypatch.setattr(pandad_mod, "HARDWARE", self.hardware)
     monkeypatch.setattr(pandad_mod, "Panda", SlowBootPanda)
-    monkeypatch.setattr(pandad_mod.PandaDFU, "list", staticmethod(lambda: []))
+    monkeypatch.setattr(pandad_mod, "PandaDFU", FakeDFU)
     monkeypatch.setattr(pandad_mod, "flash_rivian_long", lambda serials: None)
     monkeypatch.setattr(pandad_mod, "check_panda_support", lambda serials: serials)
-    monkeypatch.setattr(pandad_mod, "flash_panda", self.flash_panda)
     monkeypatch.setattr(pandad_mod.subprocess, "Popen", self.popen)
-    self.on_flash = None
-    self.on_wait = self.send_sigint_to_self
-
-  def flash_panda(self, serial):
-    self.flashed.append(serial)
-    if self.on_flash:
-      self.on_flash()
 
   def popen(self, *args, **kwargs):
     self.processes.append(FakeProcess(self.on_wait))
+    if self.on_popen:
+      self.on_popen()
     return self.processes[-1]
 
   @staticmethod
@@ -96,11 +139,12 @@ def test_waits_for_panda_to_boot_after_reset_instead_of_recovering(monkeypatch):
   loop = Loop(monkeypatch, boot_polls=3)
   pandad_mod.main()
   assert loop.hardware.calls == ["reset"]  # 没有走 recover（DFU 重刷）
-  assert loop.flashed == [SERIAL] and len(loop.processes) == 1
+  assert loop.flashed == [] and loop.dfu_recoveries == 0
+  assert len(loop.processes) == 1
 
 
 def test_sigint_during_flash_does_not_start_pandad(monkeypatch):
-  loop = Loop(monkeypatch, boot_polls=1)
+  loop = Loop(monkeypatch, boot_polls=1, needs_flash=True)
   loop.on_flash = Loop.send_sigint_to_self
   pandad_mod.main()
   assert loop.flashed == [SERIAL]
@@ -144,4 +188,40 @@ def test_waits_for_tici_panda_that_enumerates_10s_after_reset(monkeypatch):
   monkeypatch.setattr(pandad_mod, "Panda", TiciPanda)
   pandad_mod.main()
   assert loop.hardware.calls == ["reset"]  # 没有走 recover（DFU 重刷）
-  assert loop.flashed == [SERIAL] and len(loop.processes) == 1
+  assert loop.flashed == [] and loop.dfu_recoveries == 0 and len(loop.processes) == 1
+
+
+@pytest.mark.parametrize("legacy_protocol", [False, True])
+def test_recovers_bootstub_and_app_before_launching_pandad(monkeypatch, legacy_protocol):
+  loop = Loop(monkeypatch, needs_flash=True, legacy_protocol=legacy_protocol)
+  pandad_mod.main()
+  assert loop.hardware.calls == ["reset", "recover"]
+  assert loop.dfu_recoveries == 1
+  assert loop.flashed == [SERIAL]
+  assert loop.current and not loop.bootstub
+  assert len(loop.processes) == 1
+
+
+def test_sigint_during_process_creation_is_forwarded(monkeypatch):
+  loop = Loop(monkeypatch, boot_polls=1)
+  loop.on_popen = Loop.send_sigint_to_self
+  loop.on_wait = None
+  pandad_mod.main()
+  assert len(loop.processes) == 1
+  assert loop.processes[0].signals == [signal.SIGINT]
+
+
+def test_failed_flash_verification_does_not_start_pandad(monkeypatch):
+  loop = Loop(monkeypatch, boot_polls=1, needs_flash=True)
+  loop.on_flash = lambda: setattr(loop, "current", False)
+  reset = loop.hardware.reset_internal_panda
+
+  def stop_on_next_reset():
+    reset()
+    if loop.flashed:
+      Loop.send_sigint_to_self()
+
+  monkeypatch.setattr(loop.hardware, "reset_internal_panda", stop_on_next_reset)
+  pandad_mod.main()
+  assert loop.flashed == [SERIAL]
+  assert loop.processes == []

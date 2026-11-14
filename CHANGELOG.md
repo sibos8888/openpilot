@@ -20,6 +20,7 @@ C3XL (unreleased)
 * LANLink offers manual retry after interrupted Toyota customization scans and restores schema-declared numeric defaults by removing the parameter.
 * Regression tests cover native parameter storage, deterministic external-log deletion, and complete sensor interrupt events.
 * Vehicle pose estimation uses the upstream 0.1 rad/s initial gyroscope bias uncertainty on cold start and default reset, while preserving restored filter state.
+* Panda SPI communication adopts upstream CRC32-protected requests, response replay for retries, and chip-select synchronization; startup recovers incompatible firmware through the ST bootloader while preserving diagnostic shutdown handling.
 
 sunnypilot Version 2026.002.000 (2026-06-28)
 ========================
