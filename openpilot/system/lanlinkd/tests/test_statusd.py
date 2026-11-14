@@ -9,12 +9,20 @@ from openpilot.system.lanlinkd.status_snapshot import STAGE_FIELDS
 from openpilot.system.lanlinkd.statusd import StatusCache
 
 
+def init_health(sm, services):
+  sm.seen = dict.fromkeys(services, True)
+  sm.alive = dict.fromkeys(services, True)
+  sm.valid = dict.fromkeys(services, True)
+  sm.recv_time = dict.fromkeys(services, statusd.time.monotonic())
+
+
 def make_fake_submaster_cls(exit_event, stop_after):
   state = {"calls": 0}
 
   class FakeSubMaster:
     def __init__(self, services, poll=None):
       self.updated = dict.fromkeys(services, False)
+      init_health(self, services)
 
     def update(self, timeout):
       state["calls"] += 1
@@ -22,7 +30,7 @@ def make_fake_submaster_cls(exit_event, stop_after):
         exit_event.set()
 
     def __getitem__(self, name):
-      return NS()
+      return NS(enabled=False, mads=NS(enabled=False))
 
   return FakeSubMaster
 
@@ -67,6 +75,7 @@ class TestStatusdRun:
     class FakeSubMaster:
       def __init__(self, services, poll=None):
         self.updated = dict.fromkeys(services, False)
+        init_health(self, services)
         self.calls = 0
 
       def update(self, timeout):
@@ -79,7 +88,7 @@ class TestStatusdRun:
       def __getitem__(self, name):
         sp = NS(bigStages=NS(**dict.fromkeys(STAGE_FIELDS, 0.)), bigSource='timeout', bigLateReplyCount=0,
                 bigDeadlineMs=70.)
-        return {"modelV2": NS(big=self.calls > 55), "modelDataV2SP": sp}.get(name, NS())
+        return {"modelV2": NS(big=self.calls > 55), "modelDataV2SP": sp}.get(name, NS(enabled=False, mads=NS(enabled=False)))
 
     params = NS(get=lambda k: "connected" if k == "BigmodelLinkState" else None, get_bool=lambda k: k == "BigmodelToggle")
     cache = StatusCache({}, "tici", params=params)
@@ -112,6 +121,7 @@ class TestTorqueStatus:
     class FakeSubMaster:
       def __init__(self, services, poll=None):
         self.updated = dict.fromkeys(services, False)
+        init_health(self, services)
         self.calls = 0
 
       def update(self, timeout):
@@ -123,7 +133,7 @@ class TestTorqueStatus:
           exit_event.set()
 
       def __getitem__(self, name):
-        return ltp if name == "lateralTorqueParameters" else NS()
+        return ltp if name == "lateralTorqueParameters" else NS(enabled=False, mads=NS(enabled=False))
 
     cache_bytes = b"cache"
     params = NS(get=lambda k: cache_bytes if k == "LiveTorqueParameters" else None,
@@ -177,6 +187,7 @@ class TestDiagnostics:
     class FakeSubMaster:
       def __init__(self, services, poll=None):
         self.updated = dict.fromkeys(services, False)
+        init_health(self, services)
         self.logMonoTime = dict.fromkeys(services, 0)
         self.calls = 0
         if seen is not None:
@@ -194,7 +205,7 @@ class TestDiagnostics:
           exit_event.set()
 
       def __getitem__(self, name):
-        return msgs.get(name, NS())
+        return msgs.get(name, NS(enabled=False, mads=NS(enabled=False)))
 
     def fake_snapshot(*a):
       if on_build is not None:

@@ -10,7 +10,6 @@ import { iconByName } from "@/lib/toyotaIcons";
 import { currentPage, goTo } from "@/lib/toyotaNav";
 import { toyotaData } from "@/lib/toyotaData";
 import { touch } from "@/lib/toyotaSession";
-import { toast } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import Badge from "../ui/Badge.vue";
 import Button from "../ui/Button.vue";
@@ -25,22 +24,25 @@ const items = computed(() =>
 const values = ref<ToyotaLiveValue[]>([]);
 const paused = ref(false);
 const cards = computed(() => liveCards(items.value, values.value));
+const readError = ref("");
+const updatedAt = ref("");
 
 let timer: ReturnType<typeof setInterval> | undefined;
 let reading = false;
-let errorShown = false;
 
 async function refresh(): Promise<void> {
   if (reading || paused.value || document.visibilityState !== "visible" || !tool.value) return;
   reading = true;
+  const current = tool.value;
   try {
-    values.value = (await api.toyotaReadLive(tool.value.keys)).values;
-    errorShown = false;
+    const r = await api.toyotaReadLive(current.keys);
+    if (tool.value !== current) return;
+    values.value = r.values;
+    readError.value = "";
+    updatedAt.value = new Date().toLocaleTimeString();
     touch();
   } catch (e) {
-    // 连续失败只提示一次，免得每秒弹一个
-    if (!errorShown) toast(errorText(e), "error");
-    errorShown = true;
+    if (tool.value === current) readError.value = errorText(e);
   } finally {
     reading = false;
   }
@@ -49,8 +51,11 @@ async function refresh(): Promise<void> {
 // 主题列表和主题页是同一个组件实例（进主题页不会重新挂载），所以计时器挂载即启动，切主题时清掉旧值立即读一次
 watch(tool, () => {
   values.value = [];
+  readError.value = "";
+  updatedAt.value = "";
   void refresh();
 });
+
 onMounted(() => {
   void refresh();
   timer = setInterval(() => void refresh(), REFRESH_MS);
@@ -61,7 +66,11 @@ onUnmounted(() => clearInterval(timer));
 <template>
   <!-- 主题页 -->
   <div v-if="tool" class="flex flex-col gap-2.5">
-    <div :class="cn('grid grid-cols-2 gap-2.5', paused && '[&_b]:text-sl-text-2')">
+    <div v-if="readError" role="status" class="rounded-lg bg-sl-danger/10 px-4 py-3 text-[13px] ring-1 ring-inset ring-sl-danger/25">
+      <p class="text-sl-danger">{{ updatedAt ? "实时数据已停止更新" : "无法读取实时数据" }}：{{ readError }}</p>
+      <p v-if="updatedAt" class="mt-1 text-sl-text-2">显示上次数据，可能已过期 · 上次更新 {{ updatedAt }}</p>
+    </div>
+    <div :class="cn('grid grid-cols-2 gap-2.5', (paused || readError) && '[&_b]:text-sl-text-2')">
       <div v-for="c in cards" :key="c.key" class="sl-card px-3 py-3.5">
         <b class="sl-tabular block text-[28px] leading-tight text-sl-text-1">
           {{ c.value }}<small v-if="c.unit" class="ml-1 text-[14px] font-medium text-sl-text-2">{{ c.unit }}</small>
@@ -71,7 +80,9 @@ onUnmounted(() => clearInterval(timer));
       </div>
     </div>
     <div class="flex items-center justify-between gap-3 px-1">
-      <span class="text-[12px] text-sl-text-3">每 1 秒刷新{{ paused ? "（已暂停）" : "" }}</span>
+      <span class="text-[12px] text-sl-text-3">
+        {{ readError ? "读取失败，每 1 秒重试" : `每 1 秒刷新${paused ? "（已暂停）" : ""}` }}
+      </span>
       <Button @click="paused = !paused"><component :is="paused ? Play : Pause" />{{ paused ? "继续" : "暂停" }}</Button>
     </div>
     <p v-if="items.some((i) => i.key === BATTERY_12V_KEY)" class="px-1 text-[12px] text-sl-text-3">

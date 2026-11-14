@@ -5,6 +5,7 @@ import time
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from openpilot.selfdrive.modeld.big_model import (BIG_OUTPUT_SLICES, parse_big_outputs, FrameDelayEstimator,
                                                   SourceBlender, BigReplyLatch, nanos_since_boot, select_frame)
@@ -47,6 +48,8 @@ def test_model_data_v2sp_meta_schema():
   sp.bigLateReplyMs = 91.5
   sp.bigLateReplyCount = 2
   assert sp.bigLateReplyMs == 91.5 and sp.bigLateReplyCount == 2
+  sp.bigSource = 'invalidOutput'
+  assert str(sp.bigSource) == 'invalidOutput'
 
 
 def test_big_output_slices_cover_abi():
@@ -328,6 +331,57 @@ def test_select_frame_rejects_zero_reply():
   assert frame.big_output is None and frame.eof_to_reply_ms == 12.
   assert frame.model_output is small
   assert frame.source == 'zeroOutput'
+
+
+@pytest.mark.parametrize('head', ['action', 'plan', 'desire_state'])
+@pytest.mark.parametrize('value', [np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize('cached', [False, True])
+def test_select_frame_rejects_nonfinite_reply(head, value, cached):
+  from unittest.mock import Mock
+  from openpilot.cereal import log
+  from openpilot.selfdrive.modeld.modeld import ModelState
+
+  raw = np.zeros(2066, dtype=np.float32)
+  raw[BIG_OUTPUT_SLICES['action'].start] = 1.
+  small = parse_big_outputs(raw.copy())
+  blender = SourceBlender(fade_frames=4)
+  if cached:
+    for _ in range(4):
+      blender.step(small, small)
+  previous = blender.big_last
+  raw[BIG_OUTPUT_SLICES[head].start] = value
+  latch = _FakeReplySelector(alive=True, result=(raw, 25., 'big'))
+  parser = Mock(wraps=parse_big_outputs)
+  state = SimpleNamespace(LAT_SMOOTH_SECONDS=0., LONG_SMOOTH_SECONDS=0.3)
+  prev_action = log.ModelDataV2.Action()
+
+  def action_for(output, lat_t, long_t):
+    return ModelState.get_action_from_model(state, output, prev_action, lat_t, long_t, 5.)
+
+  frame = select_frame(small, latch=latch, enabled=True, run_count=6, timestamp_eof=1,
+                       deadline_after_eof_ms=60., warmup_frames=5, current_time_ns=lambda: 10,
+                       blender=blender, action_for=action_for, action_t=(0.1, 0.2), parse_outputs=parser)
+  parser.assert_not_called()
+  assert frame.source == 'invalidOutput'
+  assert frame.big_output is None
+  assert frame.eof_to_reply_ms == 25.
+  assert blender.big_last is previous
+  assert blender.w == (0.75 if cached else 0.)
+  assert all(np.isfinite(output).all() for output in frame.model_output.values())
+  assert np.isfinite([frame.desired_curvature, frame.desired_acceleration]).all()
+
+  prev_action = log.ModelDataV2.Action(desiredCurvature=frame.desired_curvature,
+                                     desiredAcceleration=frame.desired_acceleration,
+                                     shouldStop=frame.should_stop)
+  valid = np.zeros(2066, dtype=np.float32)
+  valid[BIG_OUTPUT_SLICES['action'].start] = 2.
+  latch.result = (valid, 25., 'big')
+  recovered = select_frame(small, latch=latch, enabled=True, run_count=7, timestamp_eof=2,
+                           deadline_after_eof_ms=60., warmup_frames=5, current_time_ns=lambda: 10,
+                           blender=blender, action_for=action_for, action_t=(0.1, 0.2), parse_outputs=parser)
+  parser.assert_called_once()
+  assert recovered.source == 'big'
+  assert np.isfinite([recovered.desired_curvature, recovered.desired_acceleration]).all()
 
 
 def test_big_action_curvature_uses_lat_smooth_seconds():

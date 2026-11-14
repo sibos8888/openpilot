@@ -90,7 +90,10 @@ def nmea_checksum_ok(s):
     print("ERROR: NMEA string does not have checksum delimiter:", s)
     return False
 
-  return True
+  try:
+    return checksum == int(s[-2:], 16)
+  except ValueError:
+    return False
 
 def process_nmea_port_messages(device:str="/dev/ttyUSB1") -> NoReturn:
   while True:
@@ -136,15 +139,15 @@ def main() -> NoReturn:
   gpio_init(GPIO.GNSS_PWR_EN, True)
   gpio_set(GPIO.GNSS_PWR_EN, True)
 
-  if b"+QGPS: 0" not in (at_cmd("AT+QGPS?") or b""):
+  if "+QGPS: 0" not in (at_cmd("AT+QGPS?") or ""):
     print("stop location tracking ...")
     at_cmd("AT+QGPSEND")
 
-  if b'+QGPSCFG: "outport",usbnmea' not in (at_cmd('AT+QGPSCFG="outport"') or b""):
+  if '+QGPSCFG: "outport",usbnmea' not in (at_cmd('AT+QGPSCFG="outport"') or ""):
     print("configure outport ...")
     at_cmd('AT+QGPSCFG="outport","usbnmea"') # usbnmea = /dev/ttyUSB1
 
-  if b'+QGPSCFG: "gnssrawdata",3,0' not in (at_cmd('AT+QGPSCFG="gnssrawdata"') or b""):
+  if '+QGPSCFG: "gnssrawdata",3,0' not in (at_cmd('AT+QGPSCFG="gnssrawdata"') or ""):
     print("configure gnssrawdata ...")
     # AT+QGPSCFG="gnssrawdata",<constellation-mask>,<port>'
     # <constellation-mask> values:

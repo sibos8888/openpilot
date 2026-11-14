@@ -377,8 +377,8 @@ int PandaSpiHandle::spi_transfer(uint8_t endpoint, uint8_t *tx_data, uint16_t tx
 
   // Read data
   rx_data_len = *(uint16_t *)(rx_buf+1);
-  if (rx_data_len >= SPI_BUF_SIZE) {
-    SPILOG(LOGE, "SPI: RX data len larger than buf size %d", rx_data_len);
+  if (rx_data_len + 4 > SPI_BUF_SIZE || rx_data_len > max_rx_len) {
+    SPILOG(LOGE, "SPI: RX data len %d exceeds buffer or requested max %d", rx_data_len, max_rx_len);
     goto fail;
   }
 

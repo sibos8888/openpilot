@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
   from opendbc.car.structs import car
 from openpilot.common.params import Params
+from openpilot.common.basedir import BASEDIR
 from openpilot.common.hardware import HARDWARE, PC, COMMA_HARDWARE
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 from openpilot.common.hardware.hw import Paths
@@ -124,7 +125,7 @@ procs = [
   NativeProcess("locationd_llk", "openpilot/sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
 ]
 
-if os.path.exists("../../third_party/copyparty/copyparty-sfx.py"):
+if os.path.exists(os.path.join(BASEDIR, "openpilot/third_party/copyparty/copyparty-sfx.py")):
   sunnypilot_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
   copyparty_args = [f"-v{Paths.crash_log_root()}:/swaglogs:r"]
   copyparty_args += [f"-v{Paths.log_root()}:/routes:r"]

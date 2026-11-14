@@ -1,12 +1,20 @@
 import io
+from concurrent.futures import ThreadPoolExecutor
+from itertools import count
+from queue import Queue
 import threading
 import time
 
 import numpy as np
 import pytest
 
+from jeepney import DBusAddress, new_error, new_method_call, new_method_return
+from jeepney.io.threading import ReceiveStopped
+from jeepney.low_level import HeaderFields, MessageType
+
 from openpilot.sunnypilot.system.bluetooth.audio import BluetoothAudioSink
-from openpilot.sunnypilot.system.bluetooth.bluez import PairingAgent
+from openpilot.sunnypilot.system.bluetooth import bluez
+from openpilot.sunnypilot.system.bluetooth.bluez import ADAPTER_IFACE, AGENT_IFACE, AGENT_PATH, DEVICE_IFACE, BlueZClient, PairingAgent
 from openpilot.sunnypilot.system.bluetooth.daemon import BluetoothController
 from openpilot.sunnypilot.system.bluetooth.protocol import (
   A2DP_SINK_UUID,
@@ -173,6 +181,175 @@ class FakeProcess:
 
   def kill(self):
     self.stopped = True
+
+
+class PairingConnection:
+  address = "00:11:22:33:44:55"
+  device_path = "/org/bluez/hci0/dev_00_11_22_33_44_55"
+
+  def __init__(self):
+    self.outgoing_serial = count(1)
+    self.incoming = Queue()
+    self.pair_started = threading.Event()
+    self.unregister_started = threading.Event()
+    self.pair_request = None
+    self.unregister_request = None
+    self.hold_unregister = False
+    self.request_member = "RequestPinCode"
+    self.agent_reply = None
+    self.close_count = 0
+    self.objects = {
+      "/org/bluez/hci0": {ADAPTER_IFACE: {"Powered": True, "Discovering": True}},
+      self.device_path: {DEVICE_IFACE: {"Address": self.address, "Alias": "Keyboard", "UUIDs": [HID_UUID], "Paired": False, "Trusted": False}},
+    }
+
+  def send(self, message, serial=None):
+    if self.close_count:
+      raise OSError("Connection closed")
+    message.header.serial = serial if serial is not None else next(self.outgoing_serial)
+    if message.header.message_type != MessageType.method_call:
+      self.agent_reply = message
+      if message.header.message_type == MessageType.method_return:
+        self.objects[self.device_path][DEVICE_IFACE]["Paired"] = True
+        self.incoming.put(new_method_return(self.pair_request))
+      return
+    member = message.header.fields[HeaderFields.member]
+    if member == "Pair":
+      self.pair_request = message
+      request = new_method_call(DBusAddress(AGENT_PATH, bus_name=":1.42", interface=AGENT_IFACE), self.request_member, "o", (self.device_path,))
+      request.header.serial = 1000
+      self.incoming.put(request)
+      self.pair_started.set()
+      return
+    if member == "UnregisterAgent":
+      self.unregister_request = message
+      self.unregister_started.set()
+      if self.hold_unregister:
+        return
+    if member == "GetManagedObjects":
+      self.incoming.put(new_method_return(message, "a{oa{sa{sv}}}", (self.objects,)))
+      return
+    if member == "Set":
+      interface, name, (_, value) = message.body
+      self.objects[message.header.fields[HeaderFields.path]][interface][name] = value
+    elif member == "StopDiscovery":
+      self.objects["/org/bluez/hci0"][ADAPTER_IFACE]["Discovering"] = False
+    self.incoming.put(new_method_return(message))
+
+  def receive(self):
+    message = self.incoming.get()
+    if message is None:
+      raise ReceiveStopped()
+    return message
+
+  def interrupt(self):
+    self.incoming.put(None)
+
+  def reset_interrupt(self):
+    pass
+
+  def close(self):
+    self.close_count += 1
+
+
+@pytest.fixture
+def blocked_pairing(monkeypatch):
+  connection = PairingConnection()
+  connections = []
+
+  def open_connection(**_kwargs):
+    connections.append(connection)
+    return connection
+
+  monkeypatch.setattr(bluez, "open_dbus_connection", open_connection)
+  controller = BluetoothController(FakeParams(IsOffroad=True, BluetoothEnabled=True), BlueZClient, FakeRadio(), FakeParams())
+  pair_done = threading.Event()
+  pair_worker = controller._pair_worker
+
+  def tracked_pair_worker(address):
+    try:
+      pair_worker(address)
+    finally:
+      pair_done.set()
+
+  monkeypatch.setattr(controller, "_pair_worker", tracked_pair_worker)
+  pool = ThreadPoolExecutor(max_workers=3)
+  try:
+    yield controller, connection, connections, pair_done, pool
+  finally:
+    if connection.hold_unregister and connection.unregister_request is not None:
+      connection.incoming.put(new_method_return(connection.unregister_request))
+    connection.hold_unregister = False
+    if connection.pair_request is not None and not pair_done.is_set():
+      connection.incoming.put(new_error(connection.pair_request, "org.bluez.Error.Canceled"))
+      pair_done.wait(timeout=2.0)
+    controller.close()
+    pool.shutdown(wait=True)
+
+
+@pytest.mark.parametrize(("member", "kind", "value", "reply_value"), [
+  ("RequestPinCode", "pin", "1234", "1234"),
+  ("RequestPasskey", "passkey", "012345", 12345),
+])
+def test_bluez_status_and_response_during_blocked_pair(blocked_pairing, member, kind, value, reply_value):
+  controller, connection, _, pair_done, pool = blocked_pairing
+  connection.request_member = member
+  controller.handle({"command": "pair", "address": connection.address})
+  assert connection.pair_started.wait(timeout=2.0)
+  deadline = time.monotonic() + 2.0
+  while controller._bluez.agent.prompt is None and time.monotonic() < deadline:
+    time.sleep(0.01)
+
+  result = pool.submit(controller.handle, {"command": "status"}).result(timeout=2.0)["status"]
+  assert not pair_done.is_set()
+  assert result["prompt"]["kind"] == kind
+  assert result["prompt"]["address"] == connection.address
+  assert result["prompt"]["name"] == "Keyboard"
+  assert pool.submit(controller.handle, {
+    "command": "pairing_response", "prompt_id": result["prompt"]["id"], "accepted": True, "value": value,
+  }).result(timeout=2.0) == {}
+  assert pair_done.wait(timeout=2.0)
+  assert connection.agent_reply.body == (reply_value,)
+  status = controller.status()
+  assert status["error"] == ""
+  assert status["prompt"] is None
+  assert status["pairing_address"] == ""
+  assert status["devices"][0]["paired"] and status["devices"][0]["trusted"]
+
+
+def test_bluez_concurrent_close_finishes_blocked_pair_without_reopening(blocked_pairing):
+  controller, connection, connections, pair_done, pool = blocked_pairing
+  controller.handle({"command": "pair", "address": connection.address})
+  assert connection.pair_started.wait(timeout=2.0)
+  deadline = time.monotonic() + 2.0
+  while controller._bluez.agent.prompt is None and time.monotonic() < deadline:
+    time.sleep(0.01)
+  client = controller._bluez
+  assert client.agent.prompt is not None
+  connection.hold_unregister = True
+  first = pool.submit(controller.close)
+  assert connection.unregister_started.wait(timeout=2.0)
+  second_started = threading.Event()
+
+  def close_again():
+    second_started.set()
+    client.close()
+
+  second = pool.submit(close_again)
+  assert second_started.wait(timeout=2.0)
+  with pytest.raises(TimeoutError):
+    second.result(timeout=0.05)
+  assert not pair_done.is_set()
+  connection.incoming.put(new_method_return(connection.unregister_request))
+  connection.hold_unregister = False
+  first.result(timeout=2.0)
+  second.result(timeout=2.0)
+  assert pair_done.wait(timeout=2.0)
+  assert client.agent.prompt is None
+  assert not client._agent_thread.is_alive()
+  assert connection.close_count == 1
+  assert len(connections) == 1
+  assert controller._bluez is None
 
 
 def test_protocol_round_trip_and_capabilities():

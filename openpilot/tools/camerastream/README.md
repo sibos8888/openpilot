@@ -1,49 +1,52 @@
 # Camera stream
 
-`compressed_vipc.py` connects to a remote device running openpilot, decodes the video streams, and republishes them over VisionIPC.
+`compressed_vipc.py` decodes remote encoded camera messages and republishes them over VisionIPC.
 
-## Usage
+## Requirements
 
-### On the device
-SSH into the device and run following in separate terminals:
+The device and PC must use the same openpilot commit. The device must publish `narrowRoadEncodeData`, `cabinEncodeData`, or `wideRoadEncodeData` through the messaging bridge.
 
-`cd /data/openpilot && ./openpilot/cereal/messaging/bridge`
+This checkout does not build or register `encoderd`. Starting `camerad` and the messaging bridge alone does not provide the encoded messages that this client requires. The commands below describe the available tools. They do not establish an end-to-end streaming setup for this checkout.
 
-`cd /data/openpilot/system/loggerd && ./encoderd`
+## Device tools
 
-`cd /data/openpilot/system/camerad && ./camerad`
+Run these commands from separate terminals on a device with an existing encoded-message producer.
 
-Note that both the device and your PC must be on the same openpilot commit.
+Start the messaging bridge:
 
-Alternatively paste this as a single command:
+```sh
+cd /data/openpilot
+./openpilot/cereal/messaging/bridge
 ```
-(
-  cd /data/openpilot
-  ./openpilot/cereal/messaging/bridge &
 
-  cd /data/openpilot/system/camerad/
-  ./camerad &
+If the camera process is not already running, start it:
 
-  cd /data/openpilot/system/loggerd/
-  ./encoderd &
-
-  wait
-) ; trap 'kill $(jobs -p)' SIGINT
+```sh
+cd /data/openpilot/openpilot/system/camerad
+./camerad
 ```
-Ctrl+C will stop all three processes.
 
-### On the PC
-Decode the stream with `compressed_vipc.py`:
+The camera encoder sources are under `/data/openpilot/openpilot/system/loggerd`. There is no supported `encoderd` launch command in this checkout.
 
-```cd ~/openpilot/tools/camerastream && ./compressed_vipc.py <ip>```
+## PC tools
 
-To actually display the stream, run `watch3` in separate terminal:
+Run the following commands from the repository root.
 
-```cd ~/openpilot/selfdrive/ui/ && ./watch3.py```
+Decode the remote stream:
 
-## compressed_vipc.py usage
+```sh
+python openpilot/tools/camerastream/compressed_vipc.py <ip>
 ```
-$ python3 compressed_vipc.py -h
+
+Display the local VisionIPC stream in a separate terminal:
+
+```sh
+python openpilot/selfdrive/ui/watch3.py
+```
+
+## Client arguments
+
+```text
 usage: compressed_vipc.py [-h] [--cams CAMS] [--server SERVER] [--silent] addr
 
 Decode video streams and broadcast on VisionIPC
@@ -58,9 +61,8 @@ options:
   --silent         Suppress debug output
 ```
 
+For camera 0 on a device that already publishes the required messages, run:
 
-## Example:
-```
-cd ~/openpilot/tools/camerastream && ./compressed_vipc.py comma-ffffffff --cams 0
-cd ~/openpilot/selfdrive/ui/ && ./watch3.py
+```sh
+python openpilot/tools/camerastream/compressed_vipc.py comma-ffffffff --cams 0
 ```

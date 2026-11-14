@@ -129,7 +129,7 @@ _smaps_path: str | None = None  # auto-detected on first call
 
 # per-VMA smaps is expensive (kernel walks page tables for every VMA).
 # cache results and only refresh every N cycles to keep CPU low.
-_smaps_cache: dict[int, SmapsData] = {}
+_smaps_cache: dict[tuple[int, int], SmapsData] = {}
 _smaps_cycle = 0
 _SMAPS_EVERY = 20  # refresh every 20th cycle (40s at 0.5Hz)
 
@@ -157,11 +157,12 @@ def _read_smaps(pid: int) -> SmapsData:
     return {'pss': 0, 'pss_anon': 0, 'pss_shmem': 0}
 
 
-def _get_smaps_cached(pid: int) -> SmapsData:
+def _get_smaps_cached(pid: int, starttime: int) -> SmapsData:
   """Return cached smaps data, refreshing every _SMAPS_EVERY cycles."""
-  if _smaps_cycle == 0 or pid not in _smaps_cache:
-    _smaps_cache[pid] = _read_smaps(pid)
-  return _smaps_cache.get(pid, {'pss': 0, 'pss_anon': 0, 'pss_shmem': 0})
+  key = (pid, starttime)
+  if _smaps_cycle == 0 or key not in _smaps_cache:
+    _smaps_cache[key] = _read_smaps(pid)
+  return _smaps_cache[key]
 
 
 class ProcExtra(TypedDict):
@@ -171,11 +172,12 @@ class ProcExtra(TypedDict):
   cmdline: list[str]
 
 
-_proc_cache: dict[int, ProcExtra] = {}
+_proc_cache: dict[tuple[int, int], ProcExtra] = {}
 
 
-def _get_proc_extra(pid: int, name: str) -> ProcExtra:
-  cache: ProcExtra | None = _proc_cache.get(pid)
+def _get_proc_extra(pid: int, name: str, starttime: int) -> ProcExtra:
+  key = (pid, starttime)
+  cache: ProcExtra | None = _proc_cache.get(key)
   if cache is None or cache.get('name') != name:
     exe = ''
     cmdline: list[str] = []
@@ -189,7 +191,7 @@ def _get_proc_extra(pid: int, name: str) -> ProcExtra:
     except OSError:
       pass
     cache = {'pid': pid, 'name': name, 'exe': exe, 'cmdline': cmdline}
-    _proc_cache[pid] = cache
+    _proc_cache[key] = cache
   return cache
 
 
@@ -213,6 +215,11 @@ def build_proc_log_message(msg) -> None:
   pl = msg.procLog
 
   procs = _procs()
+  live_processes = {(r['pid'], r['starttime']) for r in procs}
+  for key in _proc_cache.keys() - live_processes:
+    del _proc_cache[key]
+  for key in _smaps_cache.keys() - live_processes:
+    del _smaps_cache[key]
   l = pl.init('procs', len(procs))
   for i, r in enumerate(procs):
     proc = l[i]
@@ -232,7 +239,7 @@ def build_proc_log_message(msg) -> None:
     proc.processor = r['processor']
     proc.name = r['name']
 
-    extra = _get_proc_extra(r['pid'], r['name'])
+    extra = _get_proc_extra(r['pid'], r['name'], r['starttime'])
     proc.exe = extra['exe']
     cmdline = proc.init('cmdline', len(extra['cmdline']))
     for j, arg in enumerate(extra['cmdline']):
@@ -240,7 +247,7 @@ def build_proc_log_message(msg) -> None:
 
     # smaps is expensive (kernel walks page tables); skip small processes, use cache
     if r['rss'] * PAGE_SIZE > 5 * 1024 * 1024:
-      smaps = _get_smaps_cached(r['pid'])
+      smaps = _get_smaps_cached(r['pid'], r['starttime'])
       proc.memPss = smaps['pss']
       proc.memPssAnon = smaps['pss_anon']
       proc.memPssShmem = smaps['pss_shmem']

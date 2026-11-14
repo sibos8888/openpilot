@@ -113,9 +113,9 @@ class Controls(ControlsExt):
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
 
     # Get which state to use for active lateral control
-    _lat_active = self.get_lat_active(self.sm)
+    self.lat_active = self.get_lat_active(self.sm)
 
-    CC.latActive = _lat_active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
+    CC.latActive = self.lat_active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
                    (not standstill or self.CP.steerAtStandstill)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and \
                     (self.CP.openpilotLongitudinalControl or not self.CP_SP.pcmCruiseSpeed)
@@ -195,7 +195,7 @@ class Controls(ControlsExt):
       hudControl.leftLaneDepart = self.sm['driverAssistance'].leftLaneDeparture
       hudControl.rightLaneDepart = self.sm['driverAssistance'].rightLaneDeparture
 
-    if self.get_lat_active(self.sm):
+    if self.lat_active:
       CO = self.sm['carOutput']
       if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
         self.steer_limited_by_safety = abs(CC.actuators.steeringAngleDeg - CO.actuatorsOutput.steeringAngleDeg) > \

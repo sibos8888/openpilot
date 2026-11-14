@@ -28,6 +28,17 @@ lenv["LIBPATH"].append(Dir(rednose_gen_dir).abspath)
 # are harvested from the build machine and run from a different prefix on the
 # device, where an absolute build path would not exist (liblive.so not found).
 lenv["RPATH"].append(lenv.Literal(f'\\$$ORIGIN/{rednose_gen_dir}'))
-locationd = lenv.Program("locationd", locationd_sources, LIBS=["live", "ekf_sym"] + loc_libs + transformations)
+locationd_objects = lenv.Object(locationd_sources)
+locationd = lenv.Program("locationd", locationd_objects, LIBS=["live", "ekf_sym"] + loc_libs + transformations)
 lenv.Depends(locationd, rednose)
 lenv.Depends(locationd, live_ekf)
+
+if GetOption('extras'):
+  test_env = lenv.Clone()
+  test_env['RPATH'].append(test_env.Literal(f'\\$$ORIGIN/../{rednose_gen_dir}'))
+  test_locationd_object = test_env.Object('tests/locationd_test', 'locationd.cc',
+                                        CPPDEFINES=test_env.get('CPPDEFINES', []) + [('main', 'locationd_main')])
+  test_locationd = test_env.Program('tests/test_locationd_finite',
+                                   ['tests/test_locationd_finite.cc', test_locationd_object, lenv.Object('models/live_kf.cc')],
+                                   LIBS=['live', 'ekf_sym'] + loc_libs + transformations)
+  test_env.Depends(test_locationd, [rednose, live_ekf])

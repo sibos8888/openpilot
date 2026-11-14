@@ -114,7 +114,7 @@ def deleter_thread(exit_event: threading.Event):
             dirs_external = listdir_by_creation(Paths.log_root_external())
 
             # remove the earliest external directory we can
-            for delete_dir_external in sorted(dirs_external):
+            for delete_dir_external in dirs_external:
               delete_path_external = os.path.join(Paths.log_root_external(), delete_dir_external)
               try:
                 cloudlog.warning(f"deleting {delete_path_external}")

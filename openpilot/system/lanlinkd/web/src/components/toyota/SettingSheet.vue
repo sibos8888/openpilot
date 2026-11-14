@@ -11,7 +11,7 @@ import { api } from "@/lib/api";
 import type { ToyotaSetting } from "@/lib/schema";
 import { toast } from "@/lib/store";
 import { ecuProtocolText, errorText, previewRaw, restoreToast, settingValueLabel } from "@/lib/toyota";
-import { applyWriteResult, invalidateCustomizationScan, toyotaData } from "@/lib/toyotaData";
+import { applyWriteResult, invalidateCustomizationScan, scanCustomizations, toyotaData } from "@/lib/toyotaData";
 import { requireActive } from "@/lib/toyotaSession";
 import { cn } from "@/lib/utils";
 import Button from "../ui/Button.vue";
@@ -68,6 +68,9 @@ async function apply(): Promise<void> {
       run: () => void undo(s, r.backupId),
     });
   } catch (e) {
+    // 后端先写 ECU 再回读：回读超时或响应丢失时写入可能已生效，车上的值不确定，重新读取
+    invalidateCustomizationScan();
+    void scanCustomizations();
     toast(errorText(e), "error");
   } finally {
     clearInterval(stepTimer);
@@ -83,8 +86,9 @@ async function undo(s: ToyotaSetting, backupId: string): Promise<void> {
     const restored = restoreToast(s.name, settingValueLabel(s, r.value), r.verified);
     toast(restored.message, restored.tone);
   } catch (e) {
-    // 撤销失败时车上的值不确定，让定制页下次重新扫描
+    // 撤销失败时车上的值不确定，重新读取（Sheet 在定制页内，页面不会重新挂载）
     invalidateCustomizationScan();
+    void scanCustomizations();
     toast(errorText(e), "error");
   }
 }

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from collections.abc import Callable
 import os
-from pathlib import Path
 import time
 import numpy as np
 import openpilot.cereal.messaging as messaging
@@ -27,7 +26,7 @@ from openpilot.selfdrive.modeld.big_model import (SourceBlender, BigReplyLatch, 
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, nv12_copy_size, MODELD_INPUTS
 from openpilot.selfdrive.modeld.fill_model_msg import (fill_model_msg, fill_driving_model_data, fill_pose_msg,
                                                        PublishState, get_curvature_from_output)
-from openpilot.common.file_chunker import open_file_chunked, get_manifest_path, get_chunk_name
+from openpilot.common.file_chunker import open_file_chunked, chunked_file_exists
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import modeld_pkl_path, load_oob
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
@@ -51,38 +50,13 @@ class ModelUnavailable(Exception):
   """Raised when no usable driving model pkl can be loaded."""
 
 
-def _pkl_exists(path):
-  """True only if ``open_file_chunked`` can actually read ``path``.
-
-  A chunked artifact is a ``.chunkmanifest`` naming N chunks plus those N
-  files. Accepting the manifest alone made an interrupted download look like a
-  usable model: _find_driving_pkl's fallback to the built-in pkl never fired,
-  and open_file_chunked then raised FileNotFoundError, so modeld died and
-  openpilot refused to start ("Driving model failed to load, so openpilot
-  cannot start"). Seen on-device with 77 manifest stubs and zero chunks in
-  /data/media/0/models, which is a recoverable state -- the built-in pkl was
-  right there.
-  """
-  if os.path.isfile(path):
-    return True
-  manifest = get_manifest_path(path)
-  if not os.path.isfile(manifest):
-    return False
-  try:
-    num_chunks = int(Path(manifest).read_text().strip())
-  except (OSError, ValueError):
-    return False
-  return num_chunks > 0 and all(os.path.isfile(get_chunk_name(path, i, num_chunks))
-                                for i in range(num_chunks))
-
-
 def _find_driving_pkl():
   """Resolve the pkl to run: env override, else the built-in."""
-  if (override := os.environ.get('COMBINED_MODEL_PKL')) and _pkl_exists(override):
+  if (override := os.environ.get('COMBINED_MODEL_PKL')) and chunked_file_exists(override):
     return override
 
   builtin = str(modeld_pkl_path())
-  if _pkl_exists(builtin):
+  if chunked_file_exists(builtin):
     return builtin
 
   raise ModelUnavailable(f"no driving model available: built-in pkl missing at {builtin}")
@@ -325,8 +299,7 @@ def main(demo=False):
     is_rhd = False  # no DM in lean build: assume LHD (was driverMonitoringState.isRHD)
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
-    model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
-    lat_delay = sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay) + LAT_SMOOTH_SECONDS
     if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]

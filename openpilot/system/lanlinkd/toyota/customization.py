@@ -28,7 +28,11 @@ def read_uds_did(link, address: Address, did: int) -> bytes:
 
 
 def read_can_expanded(link, address: Address, local_id: int, mask_entry: bytes) -> bytes:
-  return coding.expand_by_mask(expect_positive(link, address, bytes([0x21, local_id]), 2), mask_entry)
+  compressed = expect_positive(link, address, bytes([0x21, local_id]), 2)
+  try:
+    return coding.expand_by_mask(compressed, mask_entry)
+  except ValueError as exc:
+    raise MalformedResponseError(str(exc)) from exc
 
 
 def _read_once(cache: dict, key, read: Callable[[], bytes]) -> bytes:

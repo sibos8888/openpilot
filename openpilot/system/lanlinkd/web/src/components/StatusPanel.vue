@@ -5,24 +5,37 @@
  * paramsVersion 同步，不该被高频触发；这里只读不写 store。
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import { Loader2 } from "lucide-vue-next";
 import { api } from "@/lib/api";
 import type { DeviceStatus, ModelStatus, TorqueStatus } from "@/lib/schema";
 import { binRows, sourceText, speedDepHint, torqueHeadline } from "@/lib/torque";
 import Badge from "./ui/Badge.vue";
+import Button from "./ui/Button.vue";
 
 const dev = ref<DeviceStatus | null>(null);
 const model = ref<ModelStatus | null>(null);
 const torque = ref<TorqueStatus | null>(null);
+const pollError = ref("");
+const snapshotStale = ref(false);
+const updatedAt = ref("");
+const refreshing = ref(false);
 let timer: ReturnType<typeof setInterval> | undefined;
 
 async function poll(): Promise<void> {
+  if (refreshing.value) return;
+  refreshing.value = true;
   try {
     const s = await api.status();
     dev.value = s.device ?? null;
     model.value = s.model ?? null;
     torque.value = s.torque ?? null;
-  } catch {
-    // 失败保留上一帧，指标显示为旧值总比闪烁好
+    pollError.value = "";
+    snapshotStale.value = s.stale === true;
+    if (!snapshotStale.value) updatedAt.value = new Date().toLocaleTimeString();
+  } catch (e) {
+    pollError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    refreshing.value = false;
   }
 }
 
@@ -68,6 +81,8 @@ const fields = computed(() => [
 /** thermalStatus 枚举（cereal DeviceState）：0 ok / 1 warm(弃用) / 2 overheated / 3 critical */
 const thermal = computed(() => {
   switch (dev.value?.thermalStatus) {
+    case undefined:
+      return { text: "温度未知", kind: "muted" as const };
     case 2:
       return { text: "过热降频", kind: "danger" as const };
     case 3:
@@ -101,6 +116,7 @@ const SOURCE_ROWS = [
   { key: "timeout", label: "超时没回" },
   { key: "late", label: "迟到" },
   { key: "zeroOutput", label: "零输出" },
+  { key: "invalidOutput", label: "非有限输出" },
   { key: "warmup", label: "warmup" },
 ] as const;
 
@@ -149,6 +165,20 @@ function coreBarClass(load: number): string {
 
 <template>
   <div class="flex flex-col gap-4">
+    <div v-if="pollError || snapshotStale" role="status" class="flex flex-wrap items-center gap-3 rounded-lg bg-sl-danger/10 px-4 py-3 ring-1 ring-inset ring-sl-danger/25">
+      <div class="min-w-0 flex-1 text-[13px]">
+        <p class="text-sl-danger">
+          <template v-if="pollError">{{ dev ? "设备状态更新失败" : "无法读取设备状态" }}：{{ pollError }}</template>
+          <template v-else>设备状态已停止更新</template>
+        </p>
+        <p v-if="updatedAt" class="mt-1 text-sl-text-2">显示上次数据，可能已过期 · 上次更新 {{ updatedAt }}</p>
+      </div>
+      <Button v-if="pollError" size="sm" :disabled="refreshing" @click="poll">
+        <Loader2 v-if="refreshing" class="animate-spin" />重试
+      </Button>
+    </div>
+    <p v-else-if="updatedAt" class="text-[12px] text-sl-text-2">上次更新 {{ updatedAt }}</p>
+
     <section class="sl-card px-5 py-4">
       <div class="flex items-center gap-2">
         <h2 class="text-[13px] font-semibold uppercase tracking-wider text-sl-text-3">

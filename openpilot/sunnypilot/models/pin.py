@@ -1,17 +1,11 @@
-"""Tinygrad revision (pin) compatibility between the device tree and model pkls.
+"""Read, write, and compare tinygrad revision sidecars for model pkls.
 
-A driving pkl embeds tinygrad JIT kernels compiled against one specific
-tinygrad revision. Running a pkl under a different revision crashes modeld
-(the 2026-09-20 pin bump shipped e837-built pkls that died on the 0811 tree).
-
-Producers publish a catalog-level ``tinygrad_ref`` and the model manager
-copies it into a ``<pkl>.tinygrad_pin`` sidecar at download time. Consumers
-check the sidecar before loading: unknown (no sidecar) keeps the legacy load
-attempt, a mismatch falls back to the built-in model instead of taking
-modeld down.
+These helpers are not part of the production model-loading path.
+modeld selects an existing COMBINED_MODEL_PKL override or the built-in pkl
+and loads it without checking a .tinygrad_pin sidecar. A pin mismatch does
+not trigger a fallback to the built-in model.
 """
 
-import os
 from pathlib import Path
 
 from openpilot.sunnypilot.models.tinygrad_ref import get_tinygrad_ref

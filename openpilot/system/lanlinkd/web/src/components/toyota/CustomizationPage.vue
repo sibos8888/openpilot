@@ -4,7 +4,7 @@
  * 只显示扫描里真正读到的项（ECU 不在线或车上不支持的不显示）。
  * 点设置行弹 SettingSheet，选了值就备份 → 写入 → 校验。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeMount, ref } from "vue";
 import { ChevronRight, RefreshCw } from "lucide-vue-next";
 import type { ToyotaSetting } from "@/lib/schema";
 import { scanTally, settingValueLabel } from "@/lib/toyota";
@@ -18,7 +18,7 @@ const scan = computed(() => toyotaData.customization);
 const catalog = computed(() => toyotaData.catalog!);
 const tally = computed(() => scanTally(scan.value.statuses, customizationScanTotal()));
 
-onMounted(() => { if (scan.value.state === "idle") void scanCustomizations(); });
+onBeforeMount(() => { if (scan.value.state === "idle") void scanCustomizations(); });
 
 const readable = computed(() => catalog.value.settings.filter((s) => s.key in scan.value.values));
 const popular = computed(() => readable.value.filter((s) => s.popular));
@@ -34,12 +34,18 @@ const valueText = (s: ToyotaSetting) => settingValueLabel(s, scan.value.values[s
 </script>
 
 <template>
-  <div v-if="scan.state !== 'done'" class="sl-card p-5 text-center">
+  <div v-if="scan.state === 'scanning'" class="sl-card p-5 text-center">
     <b class="text-[15px] text-sl-text-1">正在读取 ECU <span class="sl-tabular">{{ tally.done }}/{{ tally.total }}</span></b>
     <p class="mt-1 text-[13px] text-sl-text-2">读取 {{ catalog.settings.length }} 项当前设置（含 CAN 车窗项）</p>
     <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-sl-surface-3">
       <div class="h-full bg-sl-accent transition-[width] duration-100" :style="{ width: `${tally.percent}%` }" />
     </div>
+  </div>
+
+  <div v-else-if="scan.state === 'idle'" class="sl-card p-5 text-center">
+    <b class="text-[15px] text-sl-text-1">读取已中断</b>
+    <p class="mt-1 text-[13px] text-sl-text-2">车上设置可能已变化或诊断会话已断开，请重新读取。</p>
+    <Button class="mt-3" @click="scanCustomizations"><RefreshCw />重新读取</Button>
   </div>
 
   <template v-else>

@@ -49,36 +49,44 @@ function op_run_command() {
   fi
 }
 
-# be default, assume openpilot dir is in current directory
-OPENPILOT_ROOT=$(pwd)
+OPENPILOT_ROOT=$(pwd -P)
+OPENPILOT_DIR_SET=""
 function op_get_openpilot_dir() {
-  # First try traversing up the directory tree
-  while [[ "$OPENPILOT_ROOT" != '/' ]];
-  do
-    if find "$OPENPILOT_ROOT/launch_openpilot.sh" -maxdepth 1 -mindepth 1 &> /dev/null; then
+  if [[ -n "$OPENPILOT_DIR_SET" ]]; then
+    op_check_openpilot_dir || return 1
+    OPENPILOT_ROOT="$(cd "$OPENPILOT_ROOT" && pwd -P)"
+    return 0
+  fi
+
+  while [[ "$OPENPILOT_ROOT" != '/' ]]; do
+    if [[ -f "$OPENPILOT_ROOT/launch_openpilot.sh" ]]; then
       return 0
     fi
-    OPENPILOT_ROOT="$(readlink -f "$OPENPILOT_ROOT/"..)"
+    OPENPILOT_ROOT="$(dirname "$OPENPILOT_ROOT")"
   done
 
-  # Fallback to hardcoded directories if not found
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
-  for dir in "$(readlink -f "$SCRIPT_DIR/../..")" "$HOME/openpilot" "/data/openpilot"; do
+  local script_dir dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  for dir in "$script_dir/.." "$HOME/openpilot" "/data/openpilot"; do
     if [[ -f "$dir/launch_openpilot.sh" ]]; then
-      OPENPILOT_ROOT="$dir"
+      OPENPILOT_ROOT="$(cd "$dir" && pwd -P)"
       return 0
     fi
   done
+  op_check_openpilot_dir
 }
 
 function op_install_post_commit() {
   op_get_openpilot_dir
-  if [[ ! -d $OPENPILOT_ROOT/.git/hooks/post-commit.d ]]; then
-    mkdir $OPENPILOT_ROOT/.git/hooks/post-commit.d
-    mv $OPENPILOT_ROOT/.git/hooks/post-commit $OPENPILOT_ROOT/.git/hooks/post-commit.d 2>/dev/null || true
+  local hooks
+  hooks="$(git -C "$OPENPILOT_ROOT" rev-parse --path-format=absolute --git-path hooks)"
+  if [[ ! -d "$hooks/post-commit.d" ]]; then
+    mkdir -p "$hooks/post-commit.d"
+    if [[ -e "$hooks/post-commit" || -L "$hooks/post-commit" ]]; then
+      mv "$hooks/post-commit" "$hooks/post-commit.d/"
+    fi
   fi
-  cd $OPENPILOT_ROOT/.git/hooks
-  ln -sf ../../scripts/post-commit post-commit
+  ln -sf "$OPENPILOT_ROOT/scripts/post-commit" "$hooks/post-commit"
 }
 
 function op_check_openpilot_dir() {
@@ -102,17 +110,21 @@ function op_check_git() {
     echo -e " ↳ [${GREEN}✔${NC}] git found."
   fi
 
-  echo "Checking for git lfs files..."
-  if [[ $(file -b $OPENPILOT_ROOT/openpilot/selfdrive/modeld/models/dmonitoring_model.onnx) == "data" ]]; then
-    echo -e " ↳ [${GREEN}✔${NC}] git lfs files found."
+  echo "Checking for driving model files..."
+  local python="$OPENPILOT_ROOT/.venv/bin/python"
+  [[ -x "$python" ]] || python=python3
+  if PYTHONPATH="$OPENPILOT_ROOT${PYTHONPATH:+:$PYTHONPATH}" "$python" -c \
+    'import sys; from openpilot.common.file_chunker import chunked_file_exists; sys.exit(not chunked_file_exists(sys.argv[1]))' \
+    "$OPENPILOT_ROOT/openpilot/selfdrive/modeld/models/driving_supercombo.onnx"; then
+    echo -e " ↳ [${GREEN}✔${NC}] driving model files found."
   else
-    echo -e " ↳ [${RED}✗${NC}] git lfs files not found! Run 'git lfs pull'"
+    echo -e " ↳ [${RED}✗${NC}] Driving model is missing or incomplete. Restore driving_supercombo.onnx or all of its declared chunks."
     return 1
   fi
 
   echo "Checking for git submodules..."
   for name in $(git config --file .gitmodules --get-regexp path | awk '{ print $2 }' | tr '\n' ' '); do
-    if [[ -z $(ls $OPENPILOT_ROOT/$name) ]]; then
+    if [[ -z $(ls "$OPENPILOT_ROOT/$name") ]]; then
       echo -e " ↳ [${RED}✗${NC}] git submodule $name not found! Run 'git submodule update --init --recursive'"
       return 1
     fi
@@ -158,12 +170,12 @@ function op_check_venv() {
 }
 
 function op_before_cmd() {
-  if [[ ! -z "$NO_VERIFY" ]]; then
+  op_get_openpilot_dir
+  cd "$OPENPILOT_ROOT"
+
+  if [[ -n "$NO_VERIFY" ]]; then
     return 0
   fi
-
-  op_get_openpilot_dir
-  cd $OPENPILOT_ROOT
 
   result="$((op_check_openpilot_dir ) 2>&1)" || (echo -e "$result" && return 1)
   result="${result}\n$(( op_check_git ) 2>&1)" || (echo -e "$result" && return 1)
@@ -192,7 +204,7 @@ EOF
   echo -e " ↳ [${GREEN}✔${NC}] op installed successfully. Open a new shell to use it."
 
   op_get_openpilot_dir
-  cd $OPENPILOT_ROOT
+  cd "$OPENPILOT_ROOT"
 
   op_check_openpilot_dir
   op_check_os
@@ -211,7 +223,7 @@ EOF
   echo "Installing dependencies..."
   st="$(date +%s)"
   SETUP_SCRIPT="tools/setup_dependencies.sh"
-  if ! $OPENPILOT_ROOT/$SETUP_SCRIPT; then
+  if ! "$OPENPILOT_ROOT/$SETUP_SCRIPT"; then
     echo -e " ↳ [${RED}✗${NC}] Dependencies installation failed!"
     return 1
   fi
@@ -219,15 +231,6 @@ EOF
   echo -e " ↳ [${GREEN}✔${NC}] Dependencies installed successfully in $((et - st)) seconds."
 
   op_activate_venv
-
-  echo "Pulling git lfs files..."
-  st="$(date +%s)"
-  if ! retry 3 git lfs pull; then
-    echo -e " ↳ [${RED}✗${NC}] Pulling git lfs files failed!"
-    return 1
-  fi
-  et="$(date +%s)"
-  echo -e " ↳ [${GREEN}✔${NC}] Files pulled successfully in $((et - st)) seconds."
 
   op_check
 }
@@ -240,7 +243,7 @@ function op_auth() {
 function op_activate_venv() {
   # bash 3.2 can't handle this without the 'set +e'
   set +e
-  source $OPENPILOT_ROOT/.venv/bin/activate &> /dev/null || true
+  source "$OPENPILOT_ROOT/.venv/bin/activate" &> /dev/null || true
   set -e
 
   # persist venv on PATH across GitHub Actions steps
@@ -302,12 +305,13 @@ function op_esim() {
 }
 
 function op_build() {
-  CDIR=$(pwd)
+  local caller_dir="$(pwd -P)"
   op_before_cmd
-  cd "$CDIR"
+  case "$caller_dir/" in
+    "$OPENPILOT_ROOT/"*) cd "$caller_dir" ;;
+  esac
   if [[ -f "/AGNOS" ]]; then
-    # needed on AGNOS to not run out of memory
-    op_run_command openpilot/system/manager/build.py
+    op_run_command "$OPENPILOT_ROOT/openpilot/system/manager/build.py" "$@"
   else
     op_run_command scons -u "$@"
   fi
@@ -483,7 +487,7 @@ function op_default() {
 function _op() {
   # parse Options
   case $1 in
-    -d | --dir )       shift 1; OPENPILOT_ROOT="$1"; shift 1 ;;
+    -d | --dir )       shift 1; OPENPILOT_ROOT="$1"; OPENPILOT_DIR_SET=1; shift 1 ;;
     --dry )            shift 1; DRY="1" ;;
     -n | --no-verify ) shift 1; NO_VERIFY="1" ;;
   esac
@@ -506,7 +510,7 @@ function _op() {
     switch )        shift 1; op_switch "$@" ;;
     start )         shift 1; op_start "$@" ;;
     stop )          shift 1; op_stop "$@" ;;
-    restart )       shift 1; op_restart "$@" ;;
+    restart )       shift 1; op_start "$@" ;;
     post-commit )   shift 1; op_install_post_commit "$@" ;;
     adb )           shift 1; op_adb "$@" ;;
     ssh )           shift 1; op_ssh "$@" ;;

@@ -4,6 +4,8 @@ import time
 import unittest
 from functools import cache
 
+import pytest
+
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.cereal import messaging, log
 from opendbc.car.structs import car
@@ -109,6 +111,22 @@ class TestLagd(OpenpilotTestCase):
     actual_sig[~mask] = rng.normal(0, 1, size=np.sum(~mask))
     corr = masked_normalized_cross_correlation(desired_sig, actual_sig, mask, 200)[len(desired_sig) - 1:len(desired_sig) + 20]
     assert np.argmax(corr) in range(lag_frames - MAX_ERR_FRAMES, lag_frames + MAX_ERR_FRAMES + 1)
+
+  def test_confidence_uses_selected_peak_width(self):
+    for peak_lag, other_lag in [(3, 10), (5, 1), (12, 8)]:
+      with self.subTest(peak_lag=peak_lag, other_lag=other_lag):
+        expected = np.zeros(256)
+        actual = np.zeros(256)
+        expected[64] = 1.0
+        actual[64 + peak_lag - 1:64 + peak_lag + 2] = [0.96, 1.0, 0.96]
+        actual[64 + other_lag] = 0.96
+        mask = np.ones(256, dtype=bool)
+
+        lag, corr, confidence = LateralLagEstimator.actuator_delay(expected, actual, mask, DT, MIN_LAG, MAX_LAG)
+
+        assert lag == pytest.approx(peak_lag * DT, abs=0.001)
+        assert corr > 0.5
+        assert confidence == pytest.approx(0.85)
 
   def test_empty_estimator(self):
     mocked_CP = car.CarParams(steerActuatorDelay=0.5)

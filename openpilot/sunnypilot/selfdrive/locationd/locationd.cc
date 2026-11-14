@@ -520,7 +520,7 @@ void Localizer::reset_kalman(double current_time) {
 }
 
 void Localizer::finite_check(double current_time) {
-  bool all_finite = this->kf->get_x().array().isFinite().all() or this->kf->get_P().array().isFinite().all();
+  bool all_finite = this->kf->get_x().array().isFinite().all() && this->kf->get_P().array().isFinite().all();
   if (!all_finite) {
     LOGE("Non-finite values detected, kalman reset");
     this->reset_kalman(current_time);

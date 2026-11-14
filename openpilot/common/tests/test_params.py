@@ -15,6 +15,16 @@ class TestParams(OpenpilotTestCase):
     self.params.put("DongleId", "cb38263377b873ee", block=True)
     assert self.params.get("DongleId") == "cb38263377b873ee"
 
+  def test_params_sync_write_failure(self):
+    os.mkdir(self.params.get_param_path("DongleId"))
+    with self.assertRaises(OSError):
+      self.params.put("DongleId", "test", block=True)
+
+  def test_params_sync_bool_write_failure(self):
+    os.mkdir(self.params.get_param_path("IsMetric"))
+    with self.assertRaises(OSError):
+      self.params.put_bool("IsMetric", True, block=True)
+
   def test_params_non_ascii(self):
     st = b"\xe1\x90\xff"
     self.params.put("CarParams", st, block=True)
@@ -113,6 +123,15 @@ class TestParams(OpenpilotTestCase):
     assert len(keys) > 20
     assert len(keys) == len(set(keys))
     assert b"CarParams" in keys
+
+  def test_params_keys_by_flag(self):
+    keys = self.params.all_keys(ParamKeyFlag.BACKUP)
+    assert b"IsMetric" in keys
+    assert len(keys) == len(set(keys))
+    for key in keys:
+      self.params.check_key(key)
+    assert set(keys) <= set(self.params.all_keys())
+    assert self.params.all_keys(0) == []
 
   def test_params_default_value(self):
     self.params.remove("LanguageSetting")

@@ -500,6 +500,7 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
     timeout @4;     # 截止前没到
     late @5;        # 判定时已在手但过了截止
     zeroOutput @6;  # 手机回了全零 outputs（解码跳帧/没推理）
+    invalidOutput @7;  # outputs 含 NaN 或 Inf，整条模型输出拒绝
   }
 
   enum TurnDirection {

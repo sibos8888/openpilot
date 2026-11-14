@@ -175,4 +175,4 @@ def img_from_device(pt_device):
   pt_view[pt_view[:, 2] < 0] = np.nan
 
   pt_img = pt_view/pt_view[:, 2:3]
-  return pt_img.reshape(input_shape)[:, :2]
+  return pt_img[:, :2].reshape(input_shape[:-1] + (2,))

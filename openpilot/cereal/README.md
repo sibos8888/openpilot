@@ -79,17 +79,19 @@ Example
 import openpilot.cereal.messaging as messaging
 
 # in subscriber
-sm = messaging.SubMaster(['sensorEvents'])
+sm = messaging.SubMaster(['gyroscope'])
 while 1:
   sm.update()
-  print(sm['sensorEvents'])
+  print(sm['gyroscope'].gyroUncalibrated.v)
 
 ```
 
 ```python
+import openpilot.cereal.messaging as messaging
+
 # in publisher
-pm = messaging.PubMaster(['sensorEvents'])
-dat = messaging.new_message('sensorEvents', size=1)
-dat.sensorEvents[0] = {"gyro": {"v": [0.1, -0.1, 0.1]}}
-pm.send('sensorEvents', dat)
+pm = messaging.PubMaster(['gyroscope'])
+dat = messaging.new_message('gyroscope')
+dat.gyroscope.init('gyroUncalibrated').v = [0.1, -0.1, 0.1]
+pm.send('gyroscope', dat)
 ```

@@ -89,8 +89,9 @@ def main():
     route_id_str = args.route_id or args.source
     segment_range = None
     if "/" in route_id_str:
-      route_id_str, range_str = route_id_str.rsplit("/", 1)
+      route_candidate, range_str = route_id_str.rsplit("/", 1)
       if ":" in range_str or range_str.isdigit():
+        route_id_str = route_candidate
         segment_range = range_str
 
     is_ssh = "@" in args.source or "comma-" in args.source or "sunny-" in args.source

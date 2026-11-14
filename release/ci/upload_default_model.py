@@ -12,6 +12,7 @@ import json
 import tempfile
 
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.errors import RemoteEntryNotFoundError
 
 
 def hash_file(path: str) -> str:
@@ -60,20 +61,12 @@ def main():
   for chunk in artifact.get('chunks', []):
     chunk['url'] = f"{hf_base}/{chunk['file_name']}"
 
-  print(f"Uploading model to {args.hf_defaults_path}/{folder_name}/")
-  api.upload_folder(
-    folder_path=args.model_dir,
-    path_in_repo=f"{args.hf_defaults_path}/{folder_name}",
-    repo_id=args.hf_repo,
-    repo_type="dataset",
-  )
-
   json_filename = f"{args.hf_defaults_path}/default_models.json"
   try:
     local_path = hf_hub_download(repo_id=args.hf_repo, repo_type='dataset', filename=json_filename)
     with open(local_path) as f:
       defaults_json = json.load(f)
-  except Exception:
+  except RemoteEntryNotFoundError:
     defaults_json = {"tinygrad_ref": args.tinygrad_ref, "bundles": []}
 
   defaults_json['tinygrad_ref'] = args.tinygrad_ref
@@ -87,16 +80,23 @@ def main():
 
   print(json.dumps(defaults_json, indent=2))
 
-  with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-    json.dump(defaults_json, f, indent=2)
-    tmp_path = f.name
-
-  api.upload_file(
-    path_or_fileobj=tmp_path,
-    path_in_repo=json_filename,
+  print(f"Uploading model to {args.hf_defaults_path}/{folder_name}/")
+  api.upload_folder(
+    folder_path=args.model_dir,
+    path_in_repo=f"{args.hf_defaults_path}/{folder_name}",
     repo_id=args.hf_repo,
     repo_type="dataset",
   )
+
+  with tempfile.NamedTemporaryFile(mode='w+', suffix='.json') as f:
+    json.dump(defaults_json, f, indent=2)
+    f.flush()
+    api.upload_file(
+      path_or_fileobj=f.name,
+      path_in_repo=json_filename,
+      repo_id=args.hf_repo,
+      repo_type="dataset",
+    )
 
   print(f"Updated {json_filename}")
 

@@ -1,5 +1,32 @@
-"""settings_ui.json 的缺失 key 标记（编译期校验的运行时等价物）。"""
 import json
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SchemaItem:
+  enablement: tuple[dict, ...]
+  minimum: float | None
+  maximum: float | None
+  options: tuple | None
+
+
+def index_items(settings_ui: dict) -> dict[str, SchemaItem]:
+  items = {}
+
+  def walk(node: dict, ancestors: tuple[dict, ...] = ()) -> None:
+    rules = ancestors + tuple(node.get("enablement", ()))
+    if "key" in node:
+      items[node["key"]] = SchemaItem(
+        rules, node.get("min"), node.get("max"),
+        tuple(option["value"] for option in node["options"]) if "options" in node else None)
+    for field in ("panels", "sections", "sub_panels", "items", "sub_items"):
+      for child in node.get(field, ()):
+        walk(child, rules)
+    for brand in node.get("vehicle_settings", {}).values():
+      walk(brand, rules)
+
+  walk(settings_ui)
+  return items
 
 
 def _mark_item(item: dict, key_exists) -> None:

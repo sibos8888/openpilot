@@ -3,16 +3,15 @@
 
 后端职责：
   - 从 params 组装状态快照（version/branch/commit、UpdaterState、可更新描述）
-  - check / install 两个动作：给 updated 进程发 SIGUSR1（检查）、
-    置 DoReboot 参数（安装后重启生效）
-  - offroad gating：check 与 install 均仅限停车（与 mici 一致：
-    行车中 check 按钮也禁用）
+  - check 发 SIGUSR1，download 发 SIGHUP，install 置 DoReboot 参数。
+  - 三种操作均仅限停车。
 """
 
 import subprocess
 
 UPDATED_PROC = "openpilot.system.updated.updated"
 SIGNAL_CHECK = "-SIGUSR1"   # mici CheckUpdateButton.CHECK_FOR_UPDATE
+SIGNAL_DOWNLOAD = "-SIGHUP"
 
 _DO_REBOOT = "DoReboot"
 
@@ -56,12 +55,7 @@ def status(params) -> dict:
 
 
 def signal(params, action: str) -> tuple[int, dict | str]:
-  """check / install 动作。返回 (code, payload)；code==204 表示已受理。
-
-  check: pkill -SIGUSR1 updated →下次循环 check & fetch
-  install: 置 DoReboot → updated 自己 swap 后重启
-  两个动作都只允许 offroad（与 mici 的按钮 disable 规则一致）。
-  """
+  """停车时检查、下载或安装更新，返回 (HTTP status, payload)。"""
   if action not in ("check", "download", "install"):
     return 404, "Unknown software action."
   if not params.get_bool("IsOffroad"):
@@ -74,7 +68,7 @@ def signal(params, action: str) -> tuple[int, dict | str]:
     params.put_bool(_DO_REBOOT_KEY, True, block=True)
     return 200, {}
 
-  sig = SIGNAL_CHECK
+  sig = SIGNAL_DOWNLOAD if action == "download" else SIGNAL_CHECK
   proc = subprocess.run(
     ["pkill", sig, "-f", UPDATED_PROC],
     check=False, capture_output=True, text=True,

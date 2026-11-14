@@ -18,6 +18,7 @@ import socket
 import threading
 
 from sanic import Sanic
+from sanic.exceptions import BadRequest
 from sanic.request import Request
 from sanic.response import HTTPResponse, empty, file, json as json_response
 
@@ -56,6 +57,7 @@ class LanlinkApp:
     self.cache = StatusCache(self.version_info, device_type="pc" if PC else HARDWARE.get_device_type(), params=self.params)
     self.exit_event = threading.Event()
     self._settings_ui: dict | None = None
+    self._schema_items: dict[str, settings_mod.SchemaItem] = {}
     self._wifi_manager = None
     self._wifi_lock = threading.Lock()
     threading.Thread(target=self.cache.run, args=(self.exit_event,), name="lanlink_status", daemon=True).start()
@@ -71,13 +73,10 @@ class LanlinkApp:
   # ---- helpers ----
   @staticmethod
   def _body(request: Request) -> dict:
-    # Sanic 的 request.json 对非法 JSON 抛 BadRequest(400)；此处统一成空 dict，
-    # 让各 handler 自己按缺字段返回 400，错误信息比框架默认的更具体。
-    try:
-      body = request.json
-    except Exception:
-      return {}
-    return body if isinstance(body, dict) else {}
+    body = request.json
+    if not isinstance(body, dict):
+      raise BadRequest("JSON body must be an object")
+    return body
 
   def _key_exists(self, key: str) -> bool:
     try:
@@ -90,6 +89,7 @@ class LanlinkApp:
     if self._settings_ui is None:
       with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings_ui.json")) as f:
         self._settings_ui = settings_mod.mark_missing_keys(json.load(f), self._key_exists)
+      self._schema_items = settings_mod.index_items(self._settings_ui)
     return self._settings_ui
 
   # ---- params endpoints ----
@@ -104,11 +104,20 @@ class LanlinkApp:
     return json_response({"value": value}) if code == 200 else _json_error(code, "denied")
 
   async def params_put(self, request: Request, key: str) -> HTTPResponse:
-    code, message = params_api.write_param(self.params, key, str(self._body(request).get("value", "")))
+    self._settings()
+    try:
+      value = self._body(request).get("value")
+    except BadRequest:
+      value = None
+    code, message = params_api.write_param(
+      self.params, key, value, self.cache.runtime_state(),
+      self._schema_items, self.cache.capabilities())
     return empty(status=204) if code == 204 else _json_error(code, message)
 
   async def params_delete(self, request: Request, key: str) -> HTTPResponse:
-    code, _ = params_api.delete_param(self.params, key)
+    self._settings()
+    code, _ = params_api.delete_param(
+      self.params, key, self.cache.runtime_state(), self._schema_items, self.cache.capabilities())
     return empty(status=204) if code == 204 else _json_error(code, "denied")
 
   # ---- vehicle（指纹 / 平台选择）----
@@ -116,7 +125,9 @@ class LanlinkApp:
     return json_response(vehicle_api.vehicle_state(self.params))
 
   async def vehicle_select(self, request: Request) -> HTTPResponse:
-    name = str(self._body(request).get("name", ""))
+    name = self._body(request).get("name")
+    if not isinstance(name, str):
+      return _json_error(400, "name must be a string")
     code, msg = vehicle_api.select_platform(self.params, name)
     return empty(status=204) if code == 204 else _json_error(code, msg)
 

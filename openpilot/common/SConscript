@@ -17,3 +17,4 @@ Export('common_python')
 
 if GetOption('extras'):
   env.Program('tests/test_swaglog', 'tests/test_swaglog.cc', LIBS=[_common, 'json11', 'zmq', 'pthread'])
+  env.Program('tests/test_params', 'tests/test_params.cc', LIBS=[_common, 'json11', 'zmq', 'pthread'])

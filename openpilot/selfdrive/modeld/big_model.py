@@ -239,9 +239,13 @@ def select_frame(small_output: dict[str, np.ndarray], *, latch, enabled: bool, r
     raw, eof_to_reply_ms, source = latch.wait_for(timestamp_eof, deadline_ns)
     if not alive and raw is None:
       source = 'linkDown'
-  if raw is not None and not np.any(raw):
-    raw = None
-    source = 'zeroOutput'
+  if raw is not None:
+    if not np.isfinite(raw).all():
+      raw = None
+      source = 'invalidOutput'
+    elif not np.any(raw):
+      raw = None
+      source = 'zeroOutput'
 
   big_output = parse_outputs(raw) if raw is not None else None
   model_output = blender.step(small_output, big_output)

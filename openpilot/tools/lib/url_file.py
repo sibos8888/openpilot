@@ -172,11 +172,14 @@ class URLFile:
     if r.status not in [200, 206]:
       raise URLFileException(f"Expected 206 or 200 response {r.status} ({self._url})")
 
-    ctype = (r.headers.get("content-type") or "").lower()
-    if "multipart/byteranges" not in ctype:
+    if r.status == 200:
+      return [r.data[start:end] for start, end in ranges]
+
+    ctype = r.headers.get("content-type") or ""
+    if "multipart/byteranges" not in ctype.lower():
       return [r.data,]
 
-    m = re.search(r'boundary="?([^";]+)"?', ctype)
+    m = re.search(r'boundary="?([^";]+)"?', ctype, re.IGNORECASE)
     if not m:
       raise URLFileException(f"Missing multipart boundary ({self._url})")
     boundary = m.group(1).encode()
@@ -185,9 +188,8 @@ class URLFile:
     for chunk in r.data.split(b"--" + boundary):
       if b"\r\n\r\n" not in chunk:
         continue
-      payload = chunk.split(b"\r\n\r\n", 1)[1].rstrip(b"\r\n")
-      if payload and payload != b"--":
-        parts.append(payload)
+      payload = chunk.split(b"\r\n\r\n", 1)[1].removesuffix(b"\r\n")
+      parts.append(payload)
     if len(parts) != len(ranges):
       raise URLFileException(f"Expected {len(ranges)} parts, got {len(parts)} ({self._url})")
     return parts

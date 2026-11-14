@@ -20,6 +20,7 @@ class OpenpilotPrefix:
 
   def __enter__(self):
     self.original_prefix = os.environ.get('OPENPILOT_PREFIX', None)
+    self.original_cache = os.environ.get('COMMA_CACHE')
     os.environ['OPENPILOT_PREFIX'] = self.prefix
 
     if self.create_dirs_on_enter:
@@ -31,14 +32,15 @@ class OpenpilotPrefix:
     return self
 
   def __exit__(self, exc_type, exc_obj, exc_tb):
-    if self.clean_dirs_on_exit:
-      self.clean_dirs()
     try:
-      del os.environ['OPENPILOT_PREFIX']
-      if self.original_prefix is not None:
-        os.environ['OPENPILOT_PREFIX'] = self.original_prefix
-    except KeyError:
-      pass
+      if self.clean_dirs_on_exit:
+        self.clean_dirs()
+    finally:
+      for name, value in (("OPENPILOT_PREFIX", self.original_prefix), ("COMMA_CACHE", self.original_cache)):
+        if value is None:
+          os.environ.pop(name, None)
+        else:
+          os.environ[name] = value
     return False
 
   def create_dirs(self):

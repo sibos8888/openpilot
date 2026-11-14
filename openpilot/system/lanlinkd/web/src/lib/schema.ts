@@ -158,7 +158,10 @@ export interface ModelTiming {
     "capture" | "warp" | "pairWait" | "encode" | "send" | "replyWait" | "network" | "total",
     P50P90
   > | null;
-  sources: Record<"off" | "big" | "warmup" | "linkDown" | "timeout" | "late" | "zeroOutput", number>;
+  sources: Record<
+    "off" | "big" | "warmup" | "linkDown" | "timeout" | "late" | "zeroOutput" | "invalidOutput",
+    number
+  >;
   deadlineMs: number | null;
 }
 
@@ -197,11 +200,31 @@ export interface TorqueStatus {
   toggles: { EnforceTorqueControl: boolean; LiveTorqueParamsToggle: boolean; SpeedDependentTorqueToggle: boolean };
 }
 
+/** status_snapshot.build_snapshot 的车辆部分；fresh=false 时其余字段是上次收到的值或默认值
+ *  （停车时 carState 本来就不发布，这不等于整份快照过期） */
+export interface CarStatus {
+  fresh: boolean;
+  vEgo: number;
+  standstill: boolean;
+  gearShifter: string;
+  steeringAngleDeg: number;
+  gas: number;
+  brake: number;
+  leftBlinker: boolean;
+  rightBlinker: boolean;
+  leftBlindspot: boolean;
+  rightBlindspot: boolean;
+  fuelGauge: number;
+  batteryPercent: number;
+}
+
 export interface StatusSnapshot {
+  /** 快照线程停止供给或 deviceState 不新鲜：设备遥测不能当作当前值 */
   stale?: boolean;
   paramsVersion?: string | null;
   system?: { version?: string; branch?: string; commit?: string; ignition?: boolean };
   device?: DeviceStatus;
+  car?: CarStatus;
   model?: ModelStatus;
   torque?: TorqueStatus;
   capabilities?: Capabilities;

@@ -43,6 +43,8 @@ async function restore(b: ToyotaBackup): Promise<void> {
     toast(restored.message, restored.tone);
     await load(); // 恢复前另存了一份当前值，列表会多一条
   } catch (e) {
+    // 恢复请求失败不代表 ECU 没被写过（回读超时 / 响应丢失），下次进定制页重新扫描
+    invalidateCustomizationScan();
     toast(errorText(e), "error");
   } finally {
     restoringId.value = "";

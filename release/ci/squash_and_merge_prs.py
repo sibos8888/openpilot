@@ -84,7 +84,7 @@ def validate_pr(pr):
     # Get detailed check runs for this PR
     checks_output = subprocess.run(
       ['gh', 'pr', 'checks', str(pr_number), '--json', 'name,state'],
-      capture_output=True, text=True
+      capture_output=True, text=True, check=True
     )
 
     try:
@@ -109,10 +109,10 @@ def validate_pr(pr):
 
   # Check for merge conflicts
   merge_status = subprocess.run(['gh', 'pr', 'view', str(pr_number), '--json', 'mergeable,mergeStateStatus'],
-                                capture_output=True, text=True)
+                                capture_output=True, text=True, check=True)
   merge_data = json.loads(merge_status.stdout)
-  if not merge_data.get('mergeable'):
-    return False, "merge conflicts detected"
+  if merge_data.get('mergeable') != 'MERGEABLE':
+    return False, f"mergeability is {merge_data.get('mergeable', 'UNKNOWN')}"
 
   return True, None
 
@@ -128,6 +128,7 @@ def process_pr(pr_data, source_branch, target_branch, squash_script_path):
     subprocess.run(['git', 'branch', '-D', target_branch], check=False)
     subprocess.run(['git', 'branch', target_branch, f'origin/{source_branch}'], check=True)
     success_count = 0
+    failed = False
     for pr in nodes:
       pr_comments = []
       try:
@@ -174,6 +175,7 @@ def process_pr(pr_data, source_branch, target_branch, squash_script_path):
 
         print(f"Error processing PR #{pr_number}:")
         print(f"Command failed with exit code {result.returncode}")
+        failed = True
         output = result.stdout
         print(f"Error output: {output}")
         pr_comments.append(f"⚠️ Error during automated `{target_branch}` squash:\n```\n{output}\n```")
@@ -181,6 +183,7 @@ def process_pr(pr_data, source_branch, target_branch, squash_script_path):
         continue
       except Exception as e:
         print(f"Unexpected error processing PR #{pr_number}: {str(e)}")
+        failed = True
         pr_comments.append(f"⚠️ Unexpected error during automated `{target_branch}` squash:\n```\n{str(e)}\n```")
         subprocess.run(['git', 'reset', '--hard'], check=True)
         continue
@@ -188,6 +191,8 @@ def process_pr(pr_data, source_branch, target_branch, squash_script_path):
         if pr_comments:
           add_pr_comments(pr_number, pr_comments)  # This "commits" all the comments generated on this run before leaving loop on continue.
 
+    if failed:
+      raise RuntimeError("One or more PRs failed to process")
     return success_count
 
   except Exception as e:
@@ -195,7 +200,7 @@ def process_pr(pr_data, source_branch, target_branch, squash_script_path):
     print(f"Error in process_pr: {str(e)}")
     print("Full traceback:")
     print(traceback.format_exc())
-    return 0
+    raise
 
 
 def main():

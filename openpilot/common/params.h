@@ -1,14 +1,15 @@
 #pragma once
 
-#include <future>
+#include <condition_variable>
+#include <cstdint>
 #include <map>
+#include <mutex>
 #include <optional>
+#include <queue>
 #include <string>
-#include <tuple>
+#include <thread>
 #include <utility>
 #include <vector>
-
-#include "common/queue.h"
 
 enum ParamKeyFlag {
   PERSISTENT = 0x02,
@@ -74,6 +75,7 @@ public:
   inline int putBool(const std::string &key, bool val) {
     return put(key.c_str(), val ? "1" : "0", 1);
   }
+  // One lazy worker writes in FIFO order; destruction waits for all queued writes.
   void putNonBlocking(const std::string &key, const std::string &val);
   inline void putBoolNonBlocking(const std::string &key, bool val) {
     putNonBlocking(key, val ? "1" : "0");
@@ -85,7 +87,9 @@ private:
   std::string params_path;
   std::string params_prefix;
 
-  // for nonblocking write
-  std::future<void> future;
-  SafeQueue<std::pair<std::string, std::string>> queue;
+  std::mutex queue_mutex;
+  std::condition_variable queue_cv;
+  std::queue<std::pair<std::string, std::string>> queue;
+  bool stopping = false;
+  std::thread worker;
 };

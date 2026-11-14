@@ -7,14 +7,15 @@
 
 | 内容 | 是否进 git | 是否上设备 | 说明 |
 | --- | --- | --- | --- |
-| `src/`、`tests/` 源码 | 是 | 否 | 我们自己的代码，含 shadcn-vue 复制过来并改造过的 UI 组件 |
-| `package.json`、`package-lock.json` | 是 | 否 | 仅作**依赖说明**，用于 `npm ci` 复现依赖树 |
-| `vite.config.ts`、`tsconfig.json` | 是 | 否 | 构建配置 |
+| `src/`、`tests/` 源码 | 是 | 是，运行时不用 | 我们自己的代码，含 shadcn-vue 复制过来并改造过的 UI 组件 |
+| `package.json`、`package-lock.json` | 是 | 是，运行时不用 | 用于开发机上的 `npm ci` 复现依赖树 |
+| `vite.config.ts`、`tsconfig.json` | 是 | 是，运行时不用 | 构建配置 |
 | `node_modules/`（约 162 MB） | **否** | 否 | 框架与依赖代码，一律不入库，见 `.gitignore` |
 | `../static/` 构建产物 | 是 | **是** | 设备实际加载的文件 |
 
-`tools/release/release_files.py` 的 blacklist 里有 `^openpilot/system/lanlinkd/web/`，
-所以本目录不会进入设备镜像；`tools/release/test_release_files.py` 会守住这条规则。
+当前发布由 `tools/release/device_release.sh` 的 `assemble_stage` 复制构建树，
+排除 `node_modules`，但不排除本目录。发布阶段通过 `tools/release/release_lib.py check-stage` 检查产物。
+仓库没有 `tools/release/release_files.py` 或 `test_release_files.py`，也没有它们提供的前端目录排除规则。
 
 ## 依赖说明
 
@@ -70,8 +71,5 @@ tools/lanlink/build_lanlink_web.py --build             # 构建 + 写 static/.bu
 git add openpilot/system/lanlinkd/static
 ```
 
-`tools/lanlink/build_lanlink_web.py --check` 会比对 `static/.build-hash` 与源码指纹，
-不一致即报错；`tools/release/test_release_files.py` 在测试里跑这个检查。
-
-这道防护是必要的：忘记构建不会有任何报错，release 照常打包，
-只是设备上跑的还是旧界面。
+提交前手动运行 `tools/lanlink/build_lanlink_web.py --check`，比对 `static/.build-hash` 与暂存源码指纹。
+不一致即报错。当前发布脚本和 `check-stage` 没有调用这项检查，忘记构建仍可能发布旧界面。

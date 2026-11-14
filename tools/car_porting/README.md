@@ -41,21 +41,13 @@ FAILED openpilot/selfdrive/car/tests/test_car_interfaces.py::TestCarInterfaces::
 
 ### [tools/car_porting/test_car_model.py](/tools/car_porting/test_car_model.py)
 
-Given a route, runs most of the car interface to check for common errors like missing signals, blocked panda messages, and safety mismatches.
+This wrapper is currently unavailable. It imports `TestCarModelBase` from `opendbc.car.tests.test_models`, but the pinned opendbc tree has no `test_models.py` implementation. It cannot run the route-based signal and panda safety checks described by the former example.
 
-#### Example: panda safety mismatch for gasPressed
-```bash
-> python3 tools/car_porting/test_car_model.py '4822a427b188122a|2023-08-14--16-22-21'
+The interface tests above remain available for basic interface checks. They do not replace route-based panda safety validation.
 
-=====================================================================
-FAIL: test_panda_safety_carstate (__main__.CarModelTestCase.test_panda_safety_carstate)
-Assert that panda safety matches openpilot's carState
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/home/batman/openpilot/opendbc_repo/opendbc/car/tests/test_models.py", line 440, in test_panda_safety_carstate
-    self.assertFalse(failed_checks, f"panda safety doesn't agree with CarState: {failed_checks}")
-AssertionError: {'gasPressed': 116} is not false : panda safety doesn't agree with CarState: {'gasPressed': 116}
-```
+### [tools/car_porting/measure_steering_accuracy.py](/tools/car_porting/measure_steering_accuracy.py)
+
+This tool is currently unavailable for the current message schema. It still reads `controlsState.active` and `carControl.actuatorsOutput`, and assumes every lateral controller exposes steering-angle fields. Its route reader also omits the `carOutput` messages used by `update`. It needs a schema migration before it can measure steering accuracy from current logs or live messages.
 
 ## Jupyter notebooks
 

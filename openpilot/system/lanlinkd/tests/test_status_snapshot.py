@@ -191,9 +191,10 @@ def test_model_timing_stages_sources_and_deadline():
     return st(captureMs=20., warpMs=.5, pairWaitMs=1., encodeMs=2., sendMs=.5, replyWaitMs=rw, phoneTotalMs=24.)
   frames = [(rep(30.), 'big', 0, 70.), (rep(40.), 'big', 0, 70.), (st(), 'timeout', 0, 70.),
             (st(), 'timeout', 0, 70.), (rep(80.), 'big', 1, 70.), (st(), 'zeroOutput', 0, 70.),
-            (st(), 'linkDown', 0, 0.), (st(), 'warmup', 0, 0.), (st(), 'late', 1, 70.)]  # 已在手的迟到同帧也报 bigLateReplyCount
+            (st(), 'linkDown', 0, 0.), (st(), 'warmup', 0, 0.), (st(), 'late', 1, 70.),
+            (st(), str(custom.ModelDataV2SP.new_message(bigSource='invalidOutput').bigSource), 0, 70.)]
   t = build_model_timing(frames)
-  assert t["window"] == 9
+  assert t["window"] == 10
   s = t["stagesMs"]
   assert s["replyWait"] == {"p50": 40., "p90": 80.}    # 有分段的 3 帧，最近邻秩
   assert s["capture"] == {"p50": 20., "p90": 20.}
@@ -201,7 +202,8 @@ def test_model_timing_stages_sources_and_deadline():
   assert s["total"] == {"p50": 64., "p90": 104.}       # eof → bigmodeld 收到 REPLY = C4 各段之和
   assert list(s) == ["capture", "warp", "pairWait", "encode", "send", "replyWait", "network", "total"]
   # 迟到总数 = Σ bigLateReplyCount；其中判定后才到的那些从「超时没回」挪走（已在手的不重复计）
-  assert t["sources"] == {"off": 0, "big": 3, "warmup": 1, "linkDown": 1, "timeout": 1, "late": 2, "zeroOutput": 1}
+  assert t["sources"] == {"off": 0, "big": 3, "warmup": 1, "linkDown": 1, "timeout": 1,
+                          "late": 2, "zeroOutput": 1, "invalidOutput": 1}
   assert t["deadlineMs"] == 70.
 
   assert build_model_timing([])["stagesMs"] is None

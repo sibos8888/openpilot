@@ -12,18 +12,19 @@ VisionIPC 取 road（`VISION_STREAM_NARROW_ROAD`）/wide（`VISION_STREAM_WIDE_R
 | 文件 | 职责 |
 |---|---|
 | `frame_codec.{h,cpp}` | BGM1 线协议 FRAME/REPLY/ERR 编解码（与 chipmunk `app/app/src/main/cpp/` 原样同源，勿改；布局表见其头注释） |
-| `warp_pack.{h,cpp}` | NEON warp：`warpNv12` 相机帧 → 512×256 NV12（车机上 warp，手机只做 pack） |
+| `warp_pack.{h,cpp}` | NEON warp：`warpNv12` 相机帧 → 512×256 NV12（协议 v3 在 C4 上 warp，手机只做 pack） |
 | `frame_meta.{h,cpp}` | 帧头元数据：warp 矩阵 C++ 复刻 + MetaProvider（标定喂 rpyCalib，modeld 喂 desire/action_t，calib 线程只喂 deviceMotion；MapTargetWriter 使用手机位置健康位与沿路线距离） |
 | `frame_scheduler.{h,cpp}` | I 帧/丢帧状态机（纯逻辑事件输出，调用方执行 request_keyframe） |
 | `meta_cache.h` | 编码输出查表（FIFO/路）：miss 分类（stale 静默 / gap=断档上报），查不到不弹队 |
 | `uplink_sender.{h,cpp}` | 发送/重连状态机（可注入 socket/时钟） |
 | `frame_stages.h` | C4 本机分段计时（取帧/warp/配对/硬编/发送/等 REPLY，按 frame_idx 环形槽），随 bigModelReply 上报 |
 | `main.cc` | 进程组装：取帧/配对、V4L 编码、发送、REPLY 接收、标定线程 |
+| `encoder_bitrate.h` | 码率参数选择，空值或非正数回到 CLI 初值 |
 | `gen_warp_golden.py` | 矩阵 golden 表生成（宿主测试对照 Python ≤1e-5） |
 | `make_warp_golden.py` · `fixtures/` | warp 对 tinygrad `make_frame_prepare` 的 golden 生成与数据（`test_warp_golden.cc` 对照） |
 | `server_locator.{h,cpp}` | 服务端定位（06 号）：手动 IP / 限 wlan0 子网的 mDNS 发现（avahi-browse） |
 | `msg_framer.h` | 下行定长消息分帧（HELLO 48 / REPLY 8480 / ERR 40 B，REPLY 被 TCP 拆包时按累计长度拼齐） |
-| `nav_outputs.{h,cpp}` | NavExt 的车机侧输出（纯逻辑）：REPLY → `navStateSP` 快照（弯道不含经纬度）；CURVE + 手机位置健康位/期限 → `/dev/shm/params`（`MapTargetWriter`，≤2 Hz、安全清空） |
+| `nav_outputs.{h,cpp}` | NavExt 的车机侧输出（纯逻辑）：REPLY → `navStateSP` 快照（弯道不含经纬度）；CURVE + GNSS → `/dev/shm/params`（`MapTargetWriter`，≤2 Hz、安全清空） |
 | `test_bigmodeld.cc` | 宿主单测（无设备依赖，Mac/Linux 直接编译） |
 
 ## 实现口径
@@ -44,7 +45,7 @@ VisionIPC 取 road（`VISION_STREAM_NARROW_ROAD`）/wide（`VISION_STREAM_WIDE_R
     `kNewConnection` 重置连接状态并新开序列。配对杀帧只计数/日志，时间槽空洞不触发恢复；
     GOP 相位按实际提交帧数推进。`kHeadBarrier`（序列头门丢弃）虽非断档，也落
     `on_frame_dropped` 起新序列 + 双路 request（语义见 `frame_scheduler.h`）。
-3. **发送**：submit_road 即组 chunk1（头 152 B‖road 段，flags bit0=road 段 IDR、
+3. **发送**：submit_road 即组 chunk1（头 168 B‖road 段，flags bit0=road 段 IDR、
    bit1=wide 段 IDR）先发（road 出包即发）；submit_wide 组 chunk2（wide_len‖wide‖尾部保留 16 B 零）。槽：在途 1 + 排队 1
    （只留最新；新包覆盖=丢旧包报 kDrop；旧 frame_idx 迟到包静默丢）。
    **序列头门（18 号 #1/#2）**：建连/重连/断档后第一个发出的帧必须是「预测双 IDR +
@@ -63,18 +64,18 @@ VisionIPC 取 road（`VISION_STREAM_NARROW_ROAD`）/wide（`VISION_STREAM_WIDE_R
    device_frame_from_view_frame.T）；R = rot_from_euler（Z-Y-X，Rz@Ry@Rx）。
    road 用 medmodel K（910,0,256;0,910,47.6，bigmodel_frame=false）、wide 用 sbig
    （455,0,256;0,455,151.8，true）（`model.py:65-70` + `modeld.py:326-333`）。内参常量=
-   tici ox03c10（`camera.py` _ar_ox_config，本分支只适配 tici）：narrow fl=2648、wide fl=567、
-   1928×1208→cx 964/cy 604——与 frame_meta.cpp 常量逐位一致（gen_warp_golden.py 尾部注释对读）；
-   capture 校验源帧须为 1928×1208（warp_pack.h kWarpSrcW/H），不符即丢帧报错。
+   os04c10（`camera.py:52` _os_config）：narrow fl=1141.5、wide fl=425.25、1344×760→cx 672/
+   cy 380——与 frame_meta.cpp 常量逐位一致（gen_warp_golden.py 尾部注释对读）。
    golden 口径：rpy 按 float32 取值再以 double 精度算同公式；**modeld 的 float32 中间路径
    另带 ~2.7e-5 噪声（相对 ~1e-7），实测超 1e-5 判据，故 golden 走 double 路径**，判据 ≤1e-5。
 5. **编码**：EncoderInfo 自带 get_settings（FULL_H_E_V_C、bitrate 初值 = `--bitrate`/
    `kDefaultBitrate` 默认 2'000'000/路、gop 20、
    b_frames 0），`V4LEncoder::Options.output_callback`（1a 接缝，`encoder.h:25-33`、
    `v4l_encoder.h:16-24`）；回调里 IDR AU = header(VPS/SPS/PPS)‖dat（仅实际 keyframe 时拼，
-   `v4l_encoder.cc:120-133` header 每帧都给）。不发布编码数据服务 ⇒ loggerd 无编码数据
-   （checklist 项自动满足）。可调码率：Params "BigmodelEncoderBitrate"（仿
-   `encoderd.cc:54-60` 每帧读）+ `--bitrate` 初值。
+   `v4l_encoder.cc:120-133` header 每帧都给）。不设 PubMaster ⇒ loggerd 无编码数据
+   （checklist 项自动满足）。非实时 `calib_thread` 读取 Params `BigmodelEncoderBitrate`，
+   通过 `atomic<int>` 发布期望码率。配对线程只在值变化时更新两个编码器。
+   参数为空、删除或解析为非正数时，恢复 `--bitrate` 初值。
 6. **线程/锁序**（`main.cc` 头注）：2 取帧/配对（state_mtx）+ writer（sender.step）+
     REPLY reader（`msg_framer.h` 分帧 → parse_reply/parse_err，每条 REPLY 发 `navStateSP`
    并喂 `MapTargetWriter`；EOF/ERR → notify_disconnect）+ 标定
@@ -101,11 +102,26 @@ VisionIPC 取 road（`VISION_STREAM_NARROW_ROAD`）/wide（`VISION_STREAM_WIDE_R
    状态串写 Param `BigmodelLinkState`（07 号读）。连接目标 = 手动 IP（Params
    `BigmodelServerHost` 非空）或 mDNS 自动发现（限 wlan0 子网，见 `server_locator.h`）。
 
+### modeld 输入与输出边界
+
+`modeld.select_frame` 只把全部有限的 `float32[2066]` 交给 Parser 和 `SourceBlender`。
+任一位置含 NaN 或正负 Inf 时，整条模型输出被拒绝，`bigSource` 为 `invalidOutput`。
+全零输出仍报 `zeroOutput`。有效旧大模型输出继续按原有权重淡出，独立 NavExt 不受影响。
+
+`LagdToggle` 关闭时，横向延迟使用 `LagdValueCache`。打开时使用 `lateralDelay` 消息。
+选定延迟同时进入本地模型的 `action_t`、可用时的 `lateral_control_params` 和远端 `bigActionT`。
+
+模型文件存在性由 `common.file_chunker.chunked_file_exists` 判定。
+完整文件优先于同名 manifest。没有完整文件时，manifest 声明的分片必须全部可用。
+不可用的 `COMBINED_MODEL_PKL` 回落内置模型。构建依赖保留 manifest 和声明的分片列表。
+主编译入口为 `modeld/compile_modeld.py`。旧 `tg_compile` 和 DM `tg_devices` 生成路径已移除。
+
+
 ## 线协议 v4（BGM1，`kVersion = 4`）
 
 两端锁步升级，不兼容 v3。所有消息先从前 16 B 验证版本，再解释 payload。
 手机拒绝旧 FRAME 并返回 `ERR VERSION_MISMATCH`，`detail=(peer<<8)|4`；
-车机 `MsgFramer` 收到旧 HELLO/REPLY/ERR 头即拒绝并断开，清空内部导航摘要和弯道目标。
+车机 `MsgFramer` 收到旧 HELLO/REPLY/ERR 头即拒绝并断开，清空导航缓存和弯道目标。
 `BigmodelLinkState=version_mismatch` 保持到正确 HELLO，后续 connecting/stall/lost 不覆盖。
 权威逐字段布局在两仓相同的 `frame_codec.h/.cpp`。
 
@@ -139,7 +155,7 @@ bit1 route_ok、bit2 nav_ok、bit3 rerouting 不变。`NAV_STATE.age_ms` 在手�
 {"sample_time_ns":9850000000,"valid_until_ns":10450000000,"points":[{"latitude":37.422,"longitude":-122.084,"distance_m":120,"velocity":11.111}]}
 ```
 
-时间为 **车机本机 BOOTTIME 的保守推定值**：`sample=t_eof-CURVE.age_ms`，
+时间为 **C4 本机 BOOTTIME 的保守推定值**：`sample=t_eof-CURVE.age_ms`，
 `valid_until=min(sample+2s,t_eof-NAV_STATE.age_ms+2s)`。t_eof 早于手机收齐本帧，
 允许提前过期，禁止以 REPLY 到达时刻续命。两种 age 分别检查未知、下溢、未来和期限。
 NAV_STATE/CURVE 必须 present、phone_location_ok，沿路线点还需 route_ok 且非 rerouting。
@@ -151,12 +167,13 @@ reply 线程只交付待写值，非实时 calib 线程执行 Params I/O。消�
 消费者先按当前车速扣除 sample→receive 的短延迟，再在现有控制节拍累计前进距离；
 `distance=max(0,snapshot.distance_m-travelled)`。重复快照不重置累计、不能延长期限，
 旧快照、倒车、carState 无效、非有限/负速度、时间倒退和超期立即清目标。
-C3XL 显式用 `CLOCK_BOOTTIME`，Darwin 宿主测试使用注入时钟。
+C4 显式用 `CLOCK_BOOTTIME`，Darwin 宿主测试使用注入时钟。
 保留既有 TARGET_JERK/ACCEL/OFFSET、override 状态机和同坐标目标保持。
 
 连接代次变化、断连、ERR 和错版均清摘要与目标；启动/退出写 []，manager 保留
 上下路及 writer-gone 清理。`LastGPSPosition` 不再属于此模块的清理键。
-`navStateSP` 只在成功 REPLY 时发布，不新增主动空事件；未来 C3XL UI 需检查消息新鲜度和 started，避免沿用旧卡片。本次不接入 UI。
+导航卡 positionLost 显示 `Phone location unavailable`，手机健康位失效隐藏旧转向/ETA。
+可运行文案预览：[phone-location-card.html](../../../docs/phone-location-card.html)，不代表车机渲染验收。
 
 真车联合验收仍需：单弯/连续弯与 U 形路沿路线距离、2 Hz 间隔补偿、同目标保持、
 手机失效/车速失效/倒车立即清零、旧新协议互拒、休眠时钟与网络缓冲。不得单端部署。
@@ -187,6 +204,19 @@ clang++ -std=c++17 -O1 test_warp_lut.cc warp_pack.cpp frame_meta.cpp frame_codec
 clang++ -std=c++17 -O1 test_warp_golden.cc warp_pack.cpp -o /tmp/test_warp_golden && /tmp/test_warp_golden
 ```
 
+`make_warp_golden.py` 只使用当前 checkout 的 `tinygrad_repo`，子模块缺失时直接失败。
+生成日志记录实际导入路径和 Git revision。它会覆盖 `fixtures/warp_ref_m*.bin`，请在隔离验收 checkout 中运行。
+以下生成与 Python 测试命令从仓库根目录运行。
+
+```sh
+DEV=CPU python3 openpilot/selfdrive/bigmodeld/make_warp_golden.py
+python3 -m pytest -q openpilot/selfdrive/modeld/tests/test_big_model.py \
+    openpilot/selfdrive/modeld/tests/test_modeld_inputs.py
+```
+
+模型离线回归覆盖非有限 REPLY 拒绝与恢复、有效旧腿淡出、模型文件布局选择，以及实际传入模型的延迟。
+宿主 `test_bigmodeld` 覆盖码率参数选择。两路编码器热更新与删除参数后的恢复仍需 C4 验收。
+
 覆盖：状态机全转移（GOP20/wide 晚 10 帧、发送侧显式丢弃恢复、配对失败/时间槽空洞不恢复、时间槽编号）、
 MetaCache（查不到不弹队、clean2 回归、miss 分类）、序列头门（开门条件/整对丢弃/断档后首帧双 IDR）、
 连接代号（重连窗口旧提交静默拒）、
@@ -207,9 +237,9 @@ golden 表生成（输出粘进 test_bigmodeld.cc）：
     openpilot/selfdrive/bigmodeld/gen_warp_golden.py
 ```
 
-## 真机验证（C3XL ↔ 手机）
+## 真机验证（C4 ↔ Mac 参考服务端）
 
-在实际 C3XL/tici 上构建、验证 1928×1208 相机源尺寸与标定，再连接同版本手机：
-检查 motion 有效位、REPLY/navStateSP、断链/epoch/ERR 清理、上下路/进程退出清理、
-手机位置与曲线双期限，以及 SCC 距离更新。宿主测试不能代替目标设备运行。
-不包含导航 UI、设备部署或旧 C4 设备验证声明。
+C4 构建走 21 号先例 g++ 或 scons；验证：camerad 起流 → bigmodeld → `adb reverse` 连 Mac
+参考服务端（复用 `android/tools/bgm1_frame.py` 解析）；验码流 PyAV 可解、I 帧位置
+（road GOP20/wide 偏 10）、20 Hz ≥600 帧、卡顿注入触发丢帧+request_keyframe 恢复、
+loggerd 无编码数据。C4 serial 55873f9（22 号票占用中——延后或与占用会话协调）。

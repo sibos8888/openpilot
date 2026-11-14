@@ -7,6 +7,18 @@ C3XL (unreleased)
 * Disable userspace Bluetooth for this release, including saved enable settings, the Bluetooth manager, audio routing, and UI or LAN API power requests.
 * LANLink groups navigation by task, adds descriptive feature tiles, and improves mobile spacing, text contrast, and keyboard-accessible menus.
 * LANLink shows retryable loading errors and stale-data timestamps, updates telemetry without delayed bar animations, and respects keyboard and reduced-motion preferences for press feedback.
+* Parameter storage preserves enumeration buffers, reports blocking write failures, drains asynchronous writes on shutdown, and publishes shared directories and no-overwrite files atomically.
+* LANLink enforces device-state and numeric setting constraints on the backend, distinguishes stale device and vehicle data, and prevents older refreshes and diagnostic scans from replacing newer results.
+* LANLink shows persistent telemetry failures, blocks repeated pending writes, and invalidates diagnostic scans after uncertain ECU writes or restores.
+* Model selection rejects non-finite remote outputs, shares complete-file and chunked-file selection, applies configured model latency, and reads encoder bitrate settings outside the frame-pairing lock.
+* Control and localization fixes avoid duplicate lateral-state updates, use GPS timestamps in the same clock domain, restore covariance from squared standard deviations, and reset non-finite Kalman state.
+* Device UI fixes cover startup, delayed transitions, stale alerts, NPU sampling, setting confirmation, installer file ownership, and translation extraction for compact and extended layouts.
+* System services fix sensor failure handling, Bluetooth pairing concurrency, NMEA validation, bookmark freshness, segment ordering, and process-cache identity.
+* Toyota radar deinitialization restores communication through the correct callbacks. SPI receive paths reject invalid lengths before copying, and safety replay reports failures across every requested route.
+* Developer tools fix checkout and worktree handling, release failure reporting, selected-test collection, log extraction, and HTTP range reads. Documentation now identifies unsupported legacy workflows.
+* Device settings fix extended-layout refresh crashes; compact UI replays refresh offroad alerts synchronously.
+* LANLink offers manual retry after interrupted Toyota customization scans and restores schema-declared numeric defaults by removing the parameter.
+* Regression tests cover native parameter storage, deterministic external-log deletion, and complete sensor interrupt events.
 
 sunnypilot Version 2026.002.000 (2026-06-28)
 ========================

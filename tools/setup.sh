@@ -6,7 +6,10 @@ GREEN='\033[0;32m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-if [ -z "$OPENPILOT_ROOT" ]; then
+INTERACTIVE=""
+SKIP_GIT_CLONE=""
+
+if [ -z "${OPENPILOT_ROOT:-}" ]; then
   # default to current directory for installation
   OPENPILOT_ROOT="$(pwd)/openpilot"
 fi
@@ -61,8 +64,8 @@ function ask_dir() {
 
   read
   if [[ ! -z "$REPLY" ]]; then
-    mkdir -p $REPLY
-    OPENPILOT_ROOT="$(realpath $REPLY)/openpilot"
+    mkdir -p "$REPLY"
+    OPENPILOT_ROOT="$(realpath "$REPLY")/openpilot"
   fi
 }
 
@@ -72,7 +75,7 @@ function check_dir() {
     echo -e " ↳ [${RED}✗${NC}] Installation destination $OPENPILOT_ROOT already exists!"
 
     # not a valid clone, can't continue
-    if [[ ! -z "$(ls -A $OPENPILOT_ROOT)" && ! -f "$OPENPILOT_ROOT/launch_openpilot.sh" ]]; then
+    if [[ ! -z "$(ls -A "$OPENPILOT_ROOT")" && ! -f "$OPENPILOT_ROOT/launch_openpilot.sh" ]]; then
       echo -e "       $OPENPILOT_ROOT already contains files but does not seems"
       echo -e "       to be a valid openpilot git clone. Choose another location for"
       echo -e "       installing openpilot!\n"
@@ -80,7 +83,7 @@ function check_dir() {
     fi
 
     # already a "valid" openpilot clone, skip cloning again
-    if [[ ! -z "$(ls -A $OPENPILOT_ROOT)" ]]; then
+    if [[ ! -z "$(ls -A "$OPENPILOT_ROOT")" ]]; then
       SKIP_GIT_CLONE=1
     fi
 
@@ -114,7 +117,7 @@ function check_git() {
 function git_clone() {
   st="$(date +%s)"
   echo "Cloning openpilot..."
-  if $(git clone --filter=blob:none https://github.com/commaai/openpilot.git "$OPENPILOT_ROOT"); then
+  if git clone --filter=blob:none https://github.com/commaai/openpilot.git "$OPENPILOT_ROOT"; then
     if [[ -f $OPENPILOT_ROOT/launch_openpilot.sh ]]; then
       et="$(date +%s)"
       echo -e " ↳ [${GREEN}✔${NC}] Successfully cloned openpilot in $((et - st)) seconds.\n"
@@ -127,10 +130,10 @@ function git_clone() {
 }
 
 function install_with_op() {
-  cd $OPENPILOT_ROOT
-  $OPENPILOT_ROOT/tools/op.sh post-commit
+  cd "$OPENPILOT_ROOT"
+  "$OPENPILOT_ROOT/tools/op.sh" post-commit
 
-  if ! $OPENPILOT_ROOT/tools/op.sh setup; then
+  if ! "$OPENPILOT_ROOT/tools/op.sh" setup; then
     echo -e "\n[${RED}✗${NC}] failed to install openpilot!"
     return 1
   fi
@@ -147,5 +150,7 @@ check_stdin
 ask_dir
 check_dir
 check_git
-[ -z $SKIP_GIT_CLONE ] && git_clone
+if [[ -z "$SKIP_GIT_CLONE" ]]; then
+  git_clone
+fi
 install_with_op

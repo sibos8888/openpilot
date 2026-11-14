@@ -135,9 +135,11 @@ class BluetoothController:
       raise RuntimeError("Bluetooth settings can only be changed offroad")
 
   def _pair_worker(self, address: str) -> None:
+    client = None
     try:
-      self._client().pair(address)
-      status = self._client().device_for_address(address)
+      client = self._client()
+      client.pair(address)
+      status = client.device_for_address(address)
       if status.get("audio") and not self.params.get("BluetoothAudioAddress"):
         self.params.put("BluetoothAudioAddress", address, block=True)
       self._pairing_error = ""
@@ -146,7 +148,8 @@ class BluetoothController:
       cloudlog.exception("Bluetooth pairing failed")
     finally:
       try:
-        self._client().stop_discovery()
+        if client is not None:
+          client.stop_discovery()
       except Exception:
         pass
       self._pairing_address = ""

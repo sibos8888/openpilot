@@ -41,7 +41,7 @@ def build_snapshot(services: dict, version_info: dict, capabilities: dict) -> di
   ps = psl[0] if psl else None
   gps = services.get("gpsLocation")
   return {
-    "stale": not services,
+    "stale": ds is None,
     "device": {
       "started": bool(_get(ds, "started", False)),
       "cpuTempC": _list(_get(ds, "cpuTempC", [])),
@@ -60,6 +60,7 @@ def build_snapshot(services: dict, version_info: dict, capabilities: dict) -> di
       "thermalStatus": _enum(_get(ds, "thermalStatus", 0)),
     },
     "car": {
+      "fresh": cs is not None,
       "vEgo": _get(cs, "vEgo", 0.0),
       "standstill": bool(_get(cs, "standstill", False)),
       "gearShifter": _enum(_get(cs, "gearShifter", 0)),
@@ -96,9 +97,8 @@ def build_model_status(frames, big_enabled: bool, link_state: str, timing_frames
           "timing": build_model_timing(timing_frames)}
 
 
-# ModelDataV2SP.BigStageTimes 字段 / BigSource 枚举（与 custom.capnp 同序）
 STAGE_FIELDS = ('captureMs', 'warpMs', 'pairWaitMs', 'encodeMs', 'sendMs', 'replyWaitMs', 'phoneTotalMs')
-BIG_SOURCES = ('off', 'big', 'warmup', 'linkDown', 'timeout', 'late', 'zeroOutput')
+BIG_SOURCES = tuple(custom.ModelDataV2SP.BigSource.schema.enumerants)
 _C4_STAGES = ('capture', 'warp', 'pairWait', 'encode', 'send', 'replyWait')
 
 

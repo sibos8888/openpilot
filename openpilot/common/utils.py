@@ -102,7 +102,7 @@ class CallbackReader:
 @contextlib.contextmanager
 def atomic_write(path: str, mode: str = 'w', buffering: int = -1, encoding: str | None = None, newline: str | None = None,
                  overwrite: bool = False):
-  """Write to a file atomically using a temporary file in the same directory as the destination file."""
+  """Publish a complete file atomically, refusing an existing destination unless overwrite is True."""
   dir_name = os.path.dirname(path)
 
   if not overwrite and os.path.exists(path):
@@ -112,7 +112,10 @@ def atomic_write(path: str, mode: str = 'w', buffering: int = -1, encoding: str 
   try:
     with tmp_file:
       yield tmp_file
-    os.replace(tmp_file.name, path)
+    if overwrite:
+      os.replace(tmp_file.name, path)
+    else:
+      os.link(tmp_file.name, path)
   finally:
     with contextlib.suppress(FileNotFoundError):
       os.unlink(tmp_file.name)

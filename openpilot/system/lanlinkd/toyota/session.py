@@ -26,7 +26,7 @@ class SessionError(Exception):
 def car_is_parked(status_snapshot: dict) -> bool:
   """StatusCache 快照里 carState 新鲜、挂 P 挡且静止。"""
   car = status_snapshot.get("car")
-  if status_snapshot.get("stale", True) or not car:
+  if status_snapshot.get("stale", True) or not car or not car.get("fresh", False):
     return False
   return car.get("gearShifter") == GEAR_PARK and bool(car.get("standstill")) and car.get("vEgo", 1.0) < 0.1
 

@@ -5,10 +5,10 @@ import tailwindcss from "@tailwindcss/vite";
 
 // LANLink 前端构建配置。
 //
-// 产物直接写进 ../static，由 lanlinkd 的 /static 与 /assets 路由提供，
-// 并随 git 提交进仓库——设备上没有 Node，release 只发 `git ls-files` 的
-// 已 tracked 文件（见 tools/release/release_files.py）。
-// 陈旧防护见 tools/lanlink/build_lanlink_web.py：源码 hash 不匹配即报错。
+// 产物直接写进 ../static，由 lanlinkd 的 /static 与 /assets 路由提供，并随 git 提交。
+// tools/release/device_release.sh 复制构建树，排除 node_modules，但保留 web 源码。
+// 提交前手动运行 tools/lanlink/build_lanlink_web.py --check 校验产物指纹。
+// 当前发布脚本没有调用这项检查。
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {

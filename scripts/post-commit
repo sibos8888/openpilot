@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -e
-if [[ -f .git/hooks/post-commit.d/post-commit ]]; then
-  .git/hooks/post-commit.d/post-commit
+hooks="$(git rev-parse --path-format=absolute --git-path hooks)"
+if [[ -f "$hooks/post-commit.d/post-commit" ]]; then
+  "$hooks/post-commit.d/post-commit"
 fi
 tools/op.sh lint --fast
 echo ""

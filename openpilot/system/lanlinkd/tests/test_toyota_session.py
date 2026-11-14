@@ -149,12 +149,14 @@ class TestRun:
 
 class TestCarIsParked:
   def test_park_and_standstill(self):
-    assert car_is_parked({"stale": False, "car": {"gearShifter": PARK, "standstill": True, "vEgo": 0.0}})
+    assert car_is_parked({"stale": False, "car": {"fresh": True, "gearShifter": PARK, "standstill": True, "vEgo": 0.0}})
 
   @pytest.mark.parametrize("snap", [
-    {"stale": True, "car": {"gearShifter": PARK, "standstill": True, "vEgo": 0.0}},
-    {"stale": False, "car": {"gearShifter": 2, "standstill": True, "vEgo": 0.0}},
-    {"stale": False, "car": {"gearShifter": PARK, "standstill": False, "vEgo": 0.5}},
+    {"stale": True, "car": {"fresh": True, "gearShifter": PARK, "standstill": True, "vEgo": 0.0}},
+    {"stale": False, "car": {"fresh": False, "gearShifter": PARK, "standstill": True, "vEgo": 0.0}},
+    {"stale": False, "car": {"gearShifter": PARK, "standstill": True, "vEgo": 0.0}},
+    {"stale": False, "car": {"fresh": True, "gearShifter": 2, "standstill": True, "vEgo": 0.0}},
+    {"stale": False, "car": {"fresh": True, "gearShifter": PARK, "standstill": False, "vEgo": 0.5}},
     {"stale": False},
   ])
   def test_anything_else_is_not_parked(self, snap):

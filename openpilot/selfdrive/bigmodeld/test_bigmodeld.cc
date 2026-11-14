@@ -17,6 +17,7 @@
 #include <thread>
 #include <vector>
 
+#include "encoder_bitrate.h"
 #include "frame_codec.h"
 #include "frame_meta.h"
 #include "frame_scheduler.h"
@@ -2829,7 +2830,18 @@ static void test_msg_framer_rejects_old_version_before_payload() {
   }
 }
 
+static void test_encoder_bitrate_selection() {
+  constexpr int cli_default = 3'000'000;
+  CHECK(select_bitrate("", cli_default) == cli_default);
+  CHECK(select_bitrate("1000000", cli_default) == 1'000'000);
+  CHECK(select_bitrate("4000000\n", cli_default) == 4'000'000);
+  CHECK(select_bitrate("0", cli_default) == cli_default);
+  CHECK(select_bitrate("-1", cli_default) == cli_default);
+  CHECK(select_bitrate("invalid", cli_default) == cli_default);
+}
+
 int main() {
+  test_encoder_bitrate_selection();
   test_map_target_invalid_refresh_cadence();
   test_msg_framer_rejects_old_version_before_payload();
   test_v4_frame_contract();

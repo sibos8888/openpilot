@@ -1,5 +1,9 @@
 """software_api 单测：状态快照组装与动作 gating（stub params，不碰 DBus/进程）。"""
 
+from types import SimpleNamespace
+
+import pytest
+
 from openpilot.system.lanlinkd import software_api
 
 
@@ -61,8 +65,8 @@ class TestStatus:
 
 
 class TestSignal:
-  def test_check_no_updater_503(self):
-    # 本机没有 updated 进程（单测环境），check 应给明确的 503 而不是 500
+  def test_check_no_updater_503(self, monkeypatch):
+    monkeypatch.setattr(software_api.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1))
     code, msg = software_api.signal(_full_params(), "check")
     assert code == 503
     assert "not running" in msg
@@ -84,10 +88,17 @@ class TestSignal:
     # 用 stub 的 put_bool 语义写回了一个真值
     assert software_api._DO_REBOOT_KEY in p.values and p.values[software_api._DO_REBOOT_KEY] is True
 
-  def test_download_maps_sighup(self):
-    code, _ = software_api.signal(_full_params(), "download")
-    # updated 进程不存在时给 503（不 500），说明动作已被映射
-    assert code == 503
+  @pytest.mark.parametrize("action, signal", [("check", "-SIGUSR1"), ("download", "-SIGHUP")])
+  def test_update_signal(self, monkeypatch, action, signal):
+    commands = []
+
+    def run(command, **kwargs):
+      commands.append(command)
+      return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(software_api.subprocess, "run", run)
+    assert software_api.signal(_full_params(), action)[0] == 200
+    assert commands == [["pkill", signal, "-f", "openpilot.system.updated.updated"]]
 
   def test_unknown_action(self):
     code, _ = software_api.signal(_full_params(), "reboot")

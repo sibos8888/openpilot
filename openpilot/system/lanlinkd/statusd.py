@@ -1,5 +1,9 @@
 # system/lanlinkd/statusd.py
-"""SubMaster 快照线程：每个模型帧（20Hz）累计一次、快照 1Hz，线程安全缓存。capabilities 从持久化 params 生成（停车可用）。"""
+"""SubMaster 快照线程。1Hz 发布状态，读取时校验快照与各服务的单调时钟年龄。
+
+设备在线由 deviceState 决定，车辆数据另报 car.fresh。停车时不要求模型或车辆服务在线。
+普通接管和 MADS 接管均须使用有效的新鲜消息。HTTP 首次计算能力不更新后台缓存。
+"""
 import threading
 import time
 from collections import deque
@@ -8,6 +12,7 @@ from openpilot.cereal import messaging
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.system.lanlinkd.diagnostics import PARAM_KEYS as DIAGNOSTICS_PARAM_KEYS, Diagnostics
+from openpilot.system.lanlinkd.params_api import RuntimeState
 from openpilot.system.lanlinkd.status_snapshot import (
   build_capabilities, build_model_status, build_snapshot, build_torque_status, offline_torque_from_cp,
   timing_frame, torque_params_dict, torque_params_from_cache)
@@ -15,7 +20,8 @@ from openpilot.system.lanlinkd.status_snapshot import (
 # carParams 移除（capabilities 不再依赖实时 CP）
 SERVICES = ['deviceState', 'carState', 'pandaStates', 'gpsLocation', 'modelV2', 'modelDataV2SP', 'lateralTorqueParameters',
             # 诊断页（diagnostics.py）
-            'controlsState', 'carControl', 'vehicleParameters', 'extrinsicsCalibration', 'lateralDelay']
+            'controlsState', 'carControl', 'vehicleParameters', 'extrinsicsCalibration', 'lateralDelay',
+            'selfdriveState', 'selfdriveStateSP']
 MODEL_FRAMES = 50  # 最近 50 帧（20Hz ≈ 2.5s）的模型来源
 TIMING_FRAMES = 100  # 分段耗时/小模型原因窗口（≈5s）
 
@@ -29,6 +35,8 @@ TORQUE_LIVE_TIMEOUT = 5.0  # s；torqued 4Hz，超过即视为未运行（停车
 # 这个线程要占大核 ~11%（只限快照后）到 40% 以上（每轮都组快照）（Chipmunk OS 94 / 95 号实测）。
 POLL_SERVICE = 'modelDataV2SP'
 SNAPSHOT_INTERVAL = 1.0  # s；读 params + 组快照
+SNAPSHOT_TIMEOUT = 3.0
+SERVICE_TIMEOUT = 3.0
 
 
 def _bundle_or_none(v):
@@ -43,6 +51,9 @@ class StatusCache:
     self._params = params
     self._lock = threading.Lock()
     self._snapshot: dict = {"stale": True}
+    self._published_at: float | None = None
+    self._service_health: dict[str, tuple[bool, float]] = {}
+    self._engagement = (False, False)
     self._capabilities: dict = {}
     self._cap_inputs: tuple | None = None
     self._model_frames: deque[int] = deque(maxlen=MODEL_FRAMES)
@@ -113,11 +124,17 @@ class StatusCache:
           self._model_frames, bool(self._params.get_bool("BigmodelToggle")),
           str(self._params.get("BigmodelLinkState") or ""), self._timing_frames)
         snap["torque"] = self._torque_status()
+        service_health = {name: (sm.seen[name] and sm.alive[name] and sm.valid[name], sm.recv_time[name])
+                          for name in ("deviceState", "carState", "selfdriveState", "selfdriveStateSP")}
+        engagement = (bool(sm['selfdriveState'].enabled), bool(sm['selfdriveStateSP'].mads.enabled))
       except Exception:
         cloudlog.exception("lanlink statusd: snapshot build failed")
         continue
       with self._lock:
         self._snapshot = snap
+        self._published_at = time.monotonic()
+        self._service_health = service_health
+        self._engagement = engagement
 
   def _update_diagnostics(self, sm) -> None:
     """诊断统计出错只记一次日志，不能拖垮状态快照。锁：report() 在 HTTP 线程读同一份累计量。"""
@@ -136,10 +153,31 @@ class StatusCache:
       learned = (self._snapshot.get("torque") or {}).get("learned")
       return self._diag.report(param_values, learned, time.monotonic())
 
-  def snapshot(self) -> dict:
+  def _fresh(self, service: str, now: float) -> bool:
+    healthy, received_at = self._service_health.get(service, (False, 0.0))
+    return (self._published_at is not None and 0 <= now - self._published_at < SNAPSHOT_TIMEOUT and
+            healthy and 0 <= now - received_at < SERVICE_TIMEOUT)
+
+  def runtime_state(self) -> RuntimeState:
+    offroad = bool(self._params.get_bool("IsOffroad"))
+    now = time.monotonic()
     with self._lock:
-      return dict(self._snapshot)
+      states = [enabled if self._fresh(service, now) else None
+                for service, enabled in zip(("selfdriveState", "selfdriveStateSP"), self._engagement)]
+    engaged = True if True in states else None if None in states else False
+    return RuntimeState(offroad, engaged)
+
+  def snapshot(self) -> dict:
+    now = time.monotonic()
+    with self._lock:
+      snapshot = dict(self._snapshot)
+      snapshot["stale"] = not self._fresh("deviceState", now)
+      snapshot["car"] = {**snapshot.get("car", {}), "fresh": self._fresh("carState", now)}
+    if not snapshot.get("capabilities"):
+      snapshot["capabilities"] = self.capabilities()
+    return snapshot
 
   def capabilities(self) -> dict:
     with self._lock:
-      return dict(self._capabilities)
+      capabilities = dict(self._capabilities)
+    return capabilities or build_capabilities(self._params, self._device_type)

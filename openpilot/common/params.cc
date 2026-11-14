@@ -4,17 +4,21 @@
 #include <sys/file.h>
 
 #include <algorithm>
-#include <cassert>
 #include <csignal>
 #include <unordered_map>
 
 #include "common/params_keys.h"
-#include "common/queue.h"
 #include "common/swaglog.h"
 #include "common/util.h"
 #include "common/hardware/hw.h"
 
 namespace {
+
+const ParamKeyAttributes &lookup(const std::string &key) {
+  static const ParamKeyAttributes unknown{0, STRING};
+  auto it = keys.find(key);
+  return it != keys.end() ? it->second : unknown;
+}
 
 volatile sig_atomic_t params_do_exit = 0;
 void params_sig_handler(int signal) {
@@ -37,27 +41,19 @@ bool create_params_path(const std::string &param_path, const std::string &key_pa
     return false;
   }
 
-  // See if the symlink exists, otherwise create it
   if (!util::file_exists(key_path)) {
-    // 1) Create temp folder
-    // 2) Symlink it to temp link
-    // 3) Move symlink to <params>/d
-
     std::string tmp_path = param_path + "/.tmp_XXXXXX";
-    // this should be OK since mkdtemp just replaces characters in place
-    char *tmp_dir = mkdtemp((char *)tmp_path.c_str());
-    if (tmp_dir == NULL) {
+    char *tmp_dir = mkdtemp(tmp_path.data());
+    if (tmp_dir == nullptr) {
       return false;
     }
 
-    std::string link_path = std::string(tmp_dir) + ".link";
-    if (symlink(tmp_dir, link_path.c_str()) != 0) {
-      return false;
-    }
-
-    // don't return false if it has been created by other
-    if (rename(link_path.c_str(), key_path.c_str()) != 0 && errno != EEXIST) {
-      return false;
+    // Publishing directly cannot replace another initializer's directory.
+    if (symlink(tmp_dir, key_path.c_str()) != 0) {
+      int error = errno;
+      rmdir(tmp_dir);
+      errno = error;
+      return error == EEXIST;
     }
   }
 
@@ -97,10 +93,14 @@ Params::Params(const std::string &path) {
 }
 
 Params::~Params() {
-  if (future.valid()) {
-    future.wait();
+  {
+    std::lock_guard lock(queue_mutex);
+    stopping = true;
   }
-  assert(queue.empty());
+  queue_cv.notify_one();
+  if (worker.joinable()) {
+    worker.join();
+  }
 }
 
 std::vector<std::string> Params::allKeys(ParamKeyFlag flag) const {
@@ -118,15 +118,15 @@ bool Params::checkKey(const std::string &key) {
 }
 
 ParamKeyFlag Params::getKeyFlag(const std::string &key) {
-  return static_cast<ParamKeyFlag>(keys[key].flags);
+  return static_cast<ParamKeyFlag>(lookup(key).flags);
 }
 
 ParamKeyType Params::getKeyType(const std::string &key) {
-  return keys[key].type;
+  return lookup(key).type;
 }
 
 std::optional<std::string> Params::getKeyDefaultValue(const std::string &key) {
-  return keys[key].default_value;
+  return lookup(key).default_value;
 }
 
 int Params::put(const char* key, const char* value, size_t value_size) {
@@ -227,18 +227,27 @@ void Params::clearAll(ParamKeyFlag key_flag) {
 }
 
 void Params::putNonBlocking(const std::string &key, const std::string &val) {
-   queue.push(std::make_pair(key, val));
-  // start thread on demand
-  if (!future.valid() || future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-    future = std::async(std::launch::async, &Params::asyncWriteThread, this);
+  {
+    std::lock_guard lock(queue_mutex);
+    if (!worker.joinable()) {
+      worker = std::thread(&Params::asyncWriteThread, this);
+    }
+    queue.emplace(key, val);
   }
+  queue_cv.notify_one();
 }
 
 void Params::asyncWriteThread() {
-  // TODO: write the latest one if a key has multiple values in the queue.
-  std::pair<std::string, std::string> p;
-  while (queue.try_pop(p, 0)) {
-    // Params::put is Thread-Safe
-    put(p.first, p.second);
+  std::unique_lock lock(queue_mutex);
+  while (true) {
+    queue_cv.wait(lock, [this] { return stopping || !queue.empty(); });
+    if (queue.empty()) {
+      return;
+    }
+    auto item = std::move(queue.front());
+    queue.pop();
+    lock.unlock();
+    put(item.first, item.second);
+    lock.lock();
   }
 }

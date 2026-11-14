@@ -6,6 +6,7 @@
  *
  * 写入做了防抖：每次 put 在设备上都是 params.put(block=True) 落盘，
  * 按住 ± 连点会打出几十次磁盘写。本地值即时响应，静止 350ms 后才提交。
+ * 提交进行中（pending）不接受新输入，与 Switch / Select 一致：同一 key 只能有一条写入在飞。
  */
 import { computed, ref, watch } from "vue";
 import { Minus, Plus } from "lucide-vue-next";
@@ -48,7 +49,7 @@ function schedule(v: number): void {
 }
 
 function nudge(dir: 1 | -1): void {
-  if (props.disabled) return;
+  if (props.disabled || props.pending) return;
   const next = nextValue(local.value, dir, props.min, props.max, step.value);
   if (next !== local.value) schedule(next);
 }

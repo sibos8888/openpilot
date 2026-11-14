@@ -28,7 +28,8 @@ class FakeParams:
             # bluetooth 降级快照从 params 推导；设备上它们都存在
             "BluetoothEnabled": "BOOL", "BluetoothAudioAddress": "STRING",
             # 丰田诊断会话读写这两个
-            "IsOffroad": "BOOL", "LanLinkDiagMode": "BOOL"}
+            "IsOffroad": "BOOL", "IsEngaged": "BOOL", "LanLinkDiagMode": "BOOL",
+            "Mads": "BOOL", "CameraOffset": "FLOAT", "CarPlatformBundle": "JSON", "CarParamsPersistent": "BYTES"}
 
   class _Type:
     def __init__(self, name: str):
@@ -174,6 +175,55 @@ class TestParamsRoutes:
   def test_deleting_unknown_param_is_404_not_500(self, app):
     _, r = app.test_client.delete("/api/params/NoSuchKey")
     assert r.status == 404
+
+  @pytest.mark.parametrize("key", ["IsOffroad", "IsEngaged"])
+  @pytest.mark.parametrize("method", ["put", "delete"])
+  def test_runtime_params_are_protected(self, app, key, method):
+    before = dict(app.ctx.fake_params._v)
+    kwargs = {"json": {"value": "1"}} if method == "put" else {}
+    _, response = getattr(app.test_client, method)(f"/api/params/{key}", **kwargs)
+    assert response.status == 403
+    assert app.ctx.fake_params._v == before
+
+  @pytest.mark.parametrize("method", ["put", "delete"])
+  def test_onroad_setting_rejected_without_mutation(self, app, method):
+    app.ctx.fake_params._v.update(IsOffroad=False, Mads=True)
+    before = dict(app.ctx.fake_params._v)
+    kwargs = {"json": {"value": "0"}} if method == "put" else {}
+    _, response = getattr(app.test_client, method)("/api/params/Mads", **kwargs)
+    assert response.status == 409
+    assert app.ctx.fake_params._v == before
+
+  @pytest.mark.parametrize("body", ["", "{", "[]", "null", "{}", '{"value":null}', '{"value":false}'])
+  def test_invalid_string_write_has_no_effect(self, app, body):
+    app.ctx.fake_params._v["Version"] = "original"
+    before = dict(app.ctx.fake_params._v)
+    _, response = app.test_client.put("/api/params/Version", data=body, headers={"Content-Type": "application/json"})
+    assert response.status == 400
+    assert app.ctx.fake_params._v == before
+
+  def test_explicit_empty_string_is_written(self, app):
+    app.ctx.fake_params._v["Version"] = "original"
+    _, response = app.test_client.put("/api/params/Version", json={"value": ""})
+    assert response.status == 204
+    assert app.ctx.fake_params._v["Version"] == ""
+    assert app.ctx.fake_params._v["LanLinkParamsVersion"] == 1
+
+
+class TestVehicleBody:
+  @pytest.mark.parametrize("body", ["", "{", "[]", "null", "{}", '{"name":null}', '{"name":0}'])
+  def test_invalid_selection_has_no_effect(self, app, body):
+    app.ctx.fake_params._v["CarPlatformBundle"] = {"name": "manual"}
+    before = dict(app.ctx.fake_params._v)
+    _, response = app.test_client.post("/api/vehicle/select", data=body, headers={"Content-Type": "application/json"})
+    assert response.status == 400
+    assert app.ctx.fake_params._v == before
+
+  def test_explicit_empty_selection_restores_auto(self, app):
+    app.ctx.fake_params._v["CarPlatformBundle"] = {"name": "manual"}
+    _, response = app.test_client.post("/api/vehicle/select", json={"name": ""})
+    assert response.status == 204
+    assert not app.ctx.fake_params._v.get("CarPlatformBundle")
 
 
 class TestWifiCachedRead:
@@ -331,12 +381,6 @@ class TestStaticRoutes:
 
 
 class TestServerConfig:
-  def test_single_process_is_requested(self):
-    # 多 worker 会复制状态线程（StatusCache）和 WifiManager 单例，
-    # NM DBus 订阅互相打架。这不是性能选项，删掉它是功能 bug，所以锁死。
-    src = open(mod.__file__).read()
-    assert "single_process=True" in src
-
   def test_body_size_is_capped(self, app):
     assert app.config.REQUEST_MAX_SIZE == mod.MAX_BODY_BYTES
 
@@ -353,13 +397,14 @@ class TestServerConfig:
     monkeypatch.setattr(mod, "Params", lambda: FakeParams({"LanLinkEnabled": True, "Version": "0.9.8"}))
 
     closed = []
+    run_options = []
 
     class FakeApp:
       # main() 退出时要 close()：退出丰田诊断模式，把 panda 还给 pandad
       ctx = types.SimpleNamespace(state=types.SimpleNamespace(close=lambda: closed.append(True)))
 
       def run(self, **kwargs):
-        pass
+        run_options.append(kwargs)
 
     monkeypatch.setattr(mod, "create_app", lambda *a, **k: FakeApp())
     started, stopped = [], []
@@ -369,3 +414,5 @@ class TestServerConfig:
     assert len(started) == 1, "启动时没有拉起 mDNS 发布"
     assert stopped == ["PROC"], "退出时没有结束 mDNS 发布"
     assert closed == [True], "退出时没有收尾（诊断模式不退出，pandad 起不来）"
+    assert len(run_options) == 1
+    assert run_options[0]["single_process"] is True

@@ -1,18 +1,23 @@
+import os
+import threading
+import tempfile
+from unittest.mock import patch
 from collections import namedtuple
 from pathlib import Path
 from collections.abc import Sequence
 
 import openpilot.system.loggerd.deleter as deleter
-from openpilot.system.loggerd.tests.loggerd_tests_common import UploaderTestCase
+from openpilot.system.loggerd.tests.loggerd_tests_common import LoggerdTestCase
+from openpilot.system.loggerd.xattr_cache import _setxattr
 
 Stats = namedtuple("Stats", ['f_bavail', 'f_blocks', 'f_frsize'])
 
 
-class TestDeleter(UploaderTestCase):
+class TestDeleter(LoggerdTestCase):
   # Deletion behavior is independent of file size; use smaller files to keep these tests fast.
   def make_file_with_data(self, f_dir: str, fn: str, size_mb: float = .001, lock: bool = False,
-                          upload_xattr: bytes | None = None, preserve_xattr: bytes | None = None) -> Path:
-    return super().make_file_with_data(f_dir, fn, size_mb, lock, upload_xattr, preserve_xattr)
+                          preserve_xattr: bytes | None = None) -> Path:
+    return super().make_file_with_data(f_dir, fn, size_mb, lock, preserve_xattr)
 
   def fake_statvfs(self, d):
     return self.fake_stats
@@ -21,7 +26,9 @@ class TestDeleter(UploaderTestCase):
     self.f_type = "fcamera.hevc"
     super().openpilot_setup_method()
     self.fake_stats = Stats(f_bavail=0, f_blocks=10, f_frsize=4096)
-    deleter.os.statvfs = self.fake_statvfs  # ty: ignore[invalid-assignment]  # test double
+    statvfs_patch = patch.object(deleter.os, "statvfs", self.fake_statvfs)
+    statvfs_patch.start()
+    self.addCleanup(statvfs_patch.stop)
 
   def test_delete(self):
     f_path = self.make_file_with_data(self.seg_dir, self.f_type)
@@ -78,3 +85,37 @@ class TestDeleter(UploaderTestCase):
 
     assert deleter.deleter_step() == (True, None)
     assert f_path.exists(), "File deleted when locked"
+
+  def test_preserve_attribute_changed_externally(self):
+    f_path = self.make_file_with_data(self.seg_dir, self.f_type)
+    dirs = [self.seg_dir]
+    assert deleter.get_preserved_segments(dirs) == set()
+
+    set_external_xattr = getattr(os, "setxattr", _setxattr)
+    set_external_xattr(str(f_path.parent), deleter.PRESERVE_ATTR_NAME, deleter.PRESERVE_ATTR_VALUE)
+
+    assert self.seg_dir in deleter.get_preserved_segments(dirs)
+
+  def test_external_delete_order(self):
+    f_path = self.make_file_with_data(self.seg_format.format(5), self.f_type)
+    with tempfile.TemporaryDirectory() as external:
+      second = Path(external) / self.seg_format.format(2)
+      tenth = Path(external) / self.seg_format.format(10)
+      second.mkdir()
+      tenth.mkdir()
+      exit_event = threading.Event()
+      move = deleter.shutil.move
+
+      def move_and_stop(src, dst):
+        move(src, dst)
+        exit_event.set()
+
+      with patch.object(deleter.Paths, "log_root_external", return_value=external), \
+           patch.object(deleter.Path, "is_mount", return_value=True), \
+           patch.object(deleter.shutil, "move", side_effect=move_and_stop):
+        deleter.deleter_thread(exit_event)
+
+      assert not second.exists()
+      assert tenth.exists()
+      assert (Path(external) / f_path.parent.name / f_path.name).exists()
+      assert not f_path.exists()

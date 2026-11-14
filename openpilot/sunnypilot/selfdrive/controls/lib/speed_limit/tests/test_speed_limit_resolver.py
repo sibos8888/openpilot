@@ -6,6 +6,9 @@ See the LICENSE.md file in the root directory for more details.
 """
 import random
 import time
+from unittest.mock import patch
+
+import pytest
 
 from openpilot.common.parameterized import parameterized
 
@@ -46,7 +49,7 @@ def setup_sm_mock(mocker):
     'speedLimitAheadDistance': 0.,
   }, mocker)
   gps_data = create_mock({
-    'unixTimestampMillis': time.monotonic() * 1e3,
+    'unixTimestampMillis': time.time() * 1e3,
   }, mocker)
   sm_mock = mocker.MagicMock()
   sm_mock.__getitem__.side_effect = lambda key: {
@@ -141,7 +144,51 @@ class TestSpeedLimitResolverValidation(OpenpilotTestCase):
     resolver = resolver_class()
     resolver.policy = policy
     sm_mock = mocker.MagicMock()
-    sm_mock['gpsLocation'].unixTimestampMillis = (time.monotonic() - 2 * LIMIT_MAX_MAP_DATA_AGE) * 1e3
+    sm_mock['gpsLocation'].unixTimestampMillis = (time.time() - 2 * LIMIT_MAX_MAP_DATA_AGE) * 1e3
     resolver._get_from_map_data(sm_mock)
     assert resolver.limit_solutions[SpeedLimitSource.map] == 0.
     assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
+
+  def test_epoch_age_and_last_limit(self, resolver_class, mocker):
+    now = 1_800_000_000.0
+    resolver = resolver_class()
+    resolver.policy = Policy.map_data_only
+    sm = setup_sm_mock(mocker)
+    sm['gpsLocation'].unixTimestampMillis = now * 1e3
+    sm['liveMapDataSP'].speedLimit = 25.0
+
+    with patch('openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver.time.time', return_value=now):
+      resolver.update(20.0, sm)
+    assert resolver.speed_limit == 25.0
+
+    resolver.frame = 1
+    with patch('openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver.time.time',
+               return_value=now + LIMIT_MAX_MAP_DATA_AGE + 1):
+      resolver.update(20.0, sm)
+    assert resolver.speed_limit == 0.0
+    assert resolver.source == SpeedLimitSource.none
+    assert resolver.speed_limit_last == 25.0
+
+  def test_epoch_age_moves_upcoming_limit(self, resolver_class, mocker):
+    cases = [
+      (-1.0, 100.0, 10.0, 120.0),
+      (0.0, 170.0, 25.0, 0.0),
+      (1.0, 170.0, 10.0, 150.0),
+      (2.0, 170.0, 10.0, 130.0),
+    ]
+    for age, ahead_distance, expected_limit, expected_distance in cases:
+      with self.subTest(age=age, ahead_distance=ahead_distance, expected_limit=expected_limit, expected_distance=expected_distance):
+        now = 1_800_000_000.0
+        resolver = resolver_class()
+        resolver.policy = Policy.map_data_only
+        sm = setup_sm_mock(mocker)
+        sm['gpsLocation'].unixTimestampMillis = (now - age) * 1e3
+        sm['liveMapDataSP'].speedLimit = 25.0
+        sm['liveMapDataSP'].speedLimitAhead = 10.0
+        sm['liveMapDataSP'].speedLimitAheadValid = True
+        sm['liveMapDataSP'].speedLimitAheadDistance = ahead_distance
+
+        with patch('openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver.time.time', side_effect=[now]):
+          resolver.update(20.0, sm)
+        assert resolver.speed_limit == expected_limit
+        assert resolver.distance == pytest.approx(expected_distance)

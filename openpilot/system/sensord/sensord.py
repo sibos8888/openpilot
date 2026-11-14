@@ -51,8 +51,10 @@ def interrupt_loop(sensors: list[tuple[Sensor, str, bool]], event) -> None:
       cloudlog.error("no poll events set")
       continue
 
-    dat = os.read(fd, ctypes.sizeof(gpioevent_data)*16)
-    evd = gpioevent_data.from_buffer_copy(dat)
+    event_size = ctypes.sizeof(gpioevent_data)
+    dat = os.read(fd, event_size * 16)
+    event_count = len(dat) // event_size
+    evd = gpioevent_data.from_buffer_copy(dat, (event_count - 1) * event_size)
 
     cur_offset = time.time_ns() - time.monotonic_ns()
     if abs(cur_offset - offset) > 10 * 1e6:  # ms
@@ -82,11 +84,10 @@ def polling_loop(sensor: Sensor, service: str, event: threading.Event) -> None:
   while not event.is_set():
     try:
       evt = sensor.get_event()
-      if not sensor.is_data_valid():
-        continue
-      msg = messaging.new_message(service, valid=True)
-      setattr(msg, service, evt)
-      pm.send(service, msg)
+      if sensor.is_data_valid():
+        msg = messaging.new_message(service, valid=True)
+        setattr(msg, service, evt)
+        pm.send(service, msg)
     except Exception:
       cloudlog.exception(f"Error in {service} polling loop")
     rk.keep_time()
@@ -128,8 +129,9 @@ def main() -> None:
   try:
     for t in threads:
       t.start()
-    while any(t.is_alive() for t in threads):
+    while all(t.is_alive() for t in threads):
       time.sleep(1)
+    raise RuntimeError("sensord worker thread exited")
   except KeyboardInterrupt:
     pass
   finally:

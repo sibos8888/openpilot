@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError } from "../src/lib/api";
-import type { ToyotaCatalog, ToyotaEcu, ToyotaSetting, ToyotaWriteResult } from "../src/lib/schema";
-import { applyWriteResult, resetScanData, scanCustomizations, scanDtcs, toyotaData } from "../src/lib/toyotaData";
+import type { ToyotaCatalog, ToyotaCustomizationScan, ToyotaDtcScan, ToyotaEcu, ToyotaSetting, ToyotaWriteResult } from "../src/lib/schema";
+import {
+  applyWriteResult, invalidateCustomizationScan, resetScanData, scanCustomizations, scanDtcs, toyotaData,
+} from "../src/lib/toyotaData";
 
 function setting(over: Partial<ToyotaSetting>): ToyotaSetting {
   return {
@@ -73,5 +75,80 @@ describe("扫描途中会话没了（409）", () => {
       .mockImplementationOnce(sessionGone);
     await scanCustomizations();
     expect(toyotaData.customization.state).toBe("idle");
+  });
+});
+
+describe("旧扫描在 reset / 作废后返回", () => {
+  const ecus: ToyotaEcu[] = ["750/B5", "750/40"].map((id) => ({ id, tx: "750", sub: id.slice(4), name: id, protocol: "uds" }));
+
+  beforeEach(() => {
+    toyotaData.catalog!.ecus = ecus;
+    toyotaData.catalog!.settings = [highNibble, setting({ key: "body", ecu: "750/40" })];
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function queued<T>(spy: { mockImplementation: (fn: (ecu: string) => Promise<T>) => unknown }) {
+    const calls: { ecu: string; resolve: (v: T) => void }[] = [];
+    spy.mockImplementation((ecu: string) => {
+      const { promise, resolve } = Promise.withResolvers<T>();
+      calls.push({ ecu, resolve });
+      return promise;
+    });
+    return calls;
+  }
+  const okScan = (ecu: string, value: number): ToyotaCustomizationScan =>
+    ({ ecu, status: "ok", items: [{ key: ecu === "750/B5" ? "high" : "body", value, raw: "00" }] }) as never;
+
+  it("退出诊断后重新扫描：旧会话的应答不写入、不再发请求、不结束新扫描", async () => {
+    const calls = queued<ToyotaCustomizationScan>(vi.spyOn(api, "toyotaScanCustomizations"));
+    const old = scanCustomizations();
+    resetScanData();
+    const fresh = scanCustomizations();
+    expect(calls.map((c) => c.ecu)).toEqual(["750/B5", "750/B5"]);
+
+    calls[0].resolve(okScan("750/B5", 9));
+    await old;
+    expect(calls).toHaveLength(2);
+    expect(toyotaData.customization.state).toBe("scanning");
+    expect(toyotaData.customization.values).toEqual({});
+    expect(toyotaData.customization.statuses).toEqual([]);
+
+    calls[1].resolve(okScan("750/B5", 1));
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    calls[2].resolve(okScan("750/40", 2));
+    await fresh;
+    expect(toyotaData.customization.state).toBe("done");
+    expect(toyotaData.customization.statuses).toEqual(["ok", "ok"]);
+    expect(toyotaData.customization.values.high.value).toBe(1);
+  });
+
+  it("扫描途中结果作废（写入 / 恢复结果不确定）：旧扫描停下，新扫描读实际值", async () => {
+    const calls = queued<ToyotaCustomizationScan>(vi.spyOn(api, "toyotaScanCustomizations"));
+    const old = scanCustomizations();
+    invalidateCustomizationScan();
+    calls[0].resolve(okScan("750/B5", 9));
+    await old;
+    expect(calls).toHaveLength(1);
+    expect(toyotaData.customization.state).toBe("idle");
+    expect(toyotaData.customization.values).toEqual({});
+  });
+
+  it("故障码扫描同样不被旧会话污染", async () => {
+    const calls = queued<ToyotaDtcScan>(vi.spyOn(api, "toyotaScanDtc"));
+    const old = scanDtcs();
+    resetScanData();
+    const fresh = scanDtcs();
+    calls[0].resolve({ ecu: "750/B5", status: "ok", protocol: "uds", dtcs: [{ code: "B1234" }] } as never);
+    await old;
+    expect(calls).toHaveLength(2);
+    expect(toyotaData.dtc.scans).toEqual([]);
+    expect(toyotaData.dtc.state).toBe("scanning");
+
+    calls[1].resolve({ ecu: "750/B5", status: "ok", protocol: "uds", dtcs: [] });
+    await vi.waitFor(() => expect(calls).toHaveLength(3));
+    calls[2].resolve({ ecu: "750/40", status: "ok", protocol: "uds", dtcs: [] });
+    await fresh;
+    expect(toyotaData.dtc.state).toBe("done");
+    expect(toyotaData.dtc.scans.every((s) => s.dtcs.length === 0)).toBe(true);
   });
 });

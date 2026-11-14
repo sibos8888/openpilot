@@ -125,12 +125,12 @@ if __name__ == "__main__":
   new_config = config_values.default_config if args.default else config_values.tracks_enabled
   print(f"current config: 0x{current_config.hex()}")
   if current_config != new_config:
+    if not args.default and current_config != config_values.default_config:
+      print("\ncurrent config does not match expected default! (aborted)")
+      sys.exit(1)
     print("[CHANGE CONFIGURATION]")
     print(f"new config:     0x{new_config.hex()}")
     uds_client.write_data_by_identifier(config_data_id, new_config)
-    if not args.default and current_config != SUPPORTED_FW_VERSIONS[fw_version].default_config:
-      print("\ncurrent config does not match expected default! (aborted)")
-      sys.exit(1)
 
     print("[DONE]")
     print("\nrestart your vehicle and ensure there are no faults")

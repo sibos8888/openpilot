@@ -1,8 +1,6 @@
 <script setup lang="ts">
 /** 软件页：版本展示 / 检查更新 / 安装（对应 mici SoftwareLayoutMici）。
  *
- * 状态真真是 params 里的 updater 网络态：updater 进程靠 SIGUSR1 信号驱动
- * 检查，UpdateAvailable=True 时置 DoReboot 生效装新 release。2s 轮询
  * /api/software 参数快照，updaterState 会从 downloading/finalizing 走过，
  * 所以按"非 idle 即进行中"判断按钮可用性。
  */
@@ -44,6 +42,7 @@ async function action(kind: "check" | "download" | "install"): Promise<void> {
   try {
     await api.softwareOp(kind);
     if (kind === "check") toast("已请求检查更新，正在联网获取", "ok");
+    else if (kind === "download") toast("已请求下载更新，下载完成后可安装", "ok");
     else toast("安装已受理，设备将自动重启应用更新", "ok");
     await poll();
   } catch (e) {

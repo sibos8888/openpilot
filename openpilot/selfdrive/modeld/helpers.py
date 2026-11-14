@@ -6,7 +6,6 @@ import tempfile
 from pathlib import Path
 
 MODELS_DIR = Path(__file__).resolve().parent / 'models'
-TG_INPUT_DEVICES_PATH = MODELS_DIR / 'tg_input_devices.json'
 
 
 def modeld_pkl_path():

@@ -3,7 +3,7 @@ import json
 import pytest
 
 from openpilot.system.lanlinkd.params_api import (
-  BLOCKED_PARAMS, VERSION_KEY, coerce_value, delete_param, list_params, read_all, read_param,
+  VERSION_KEY, RuntimeState, coerce_value, delete_param, list_params, read_all, read_param,
   type_name, to_str, write_param)
 
 BOOL, STRING, INT, FLOAT, JSON, BYTES = 1, 0, 2, 3, 5, 6  # common/params.h ParamKeyType
@@ -125,35 +125,35 @@ class TestRead:
 
 class TestWrite:
   def test_write_ok_bumps_version(self, store):
-    code, _ = write_param(store, "IsMetric", "0")
+    code, _ = write_param(store, "IsMetric", "0", RuntimeState(True, None), {}, {})
     assert code == 204
     assert store.data[b"IsMetric"] is False  # 写入的是 python bool（C store 要求）
     assert store.versions == 1
 
   def test_write_string_typed(self):
     s = FakeStore(initial={"SomeString": "a"}, types={"SomeString": STRING})
-    code, _ = write_param(s, "SomeString", "b")
+    code, _ = write_param(s, "SomeString", "b", RuntimeState(True, None), {}, {})
     assert code == 204
     assert s.data[b"SomeString"] == "b"  # STRING 写 str
 
   def test_write_blocked_is_403(self, store):
-    assert write_param(store, "GithubSshKeys", "evil")[0] == 403
+    assert write_param(store, "GithubSshKeys", "evil", RuntimeState(True, None), {}, {})[0] == 403
     assert store.versions == 0
 
   def test_write_bad_type_is_400(self, store):
-    assert write_param(store, "IsMetric", "maybe")[0] == 400
+    assert write_param(store, "IsMetric", "maybe", RuntimeState(True, None), {}, {})[0] == 400
 
   def test_write_unknown_key_is_404(self, store):
-    assert write_param(store, "NoSuchKey", "1")[0] == 404
+    assert write_param(store, "NoSuchKey", "1", RuntimeState(True, None), {}, {})[0] == 404
 
 
 class TestDelete:
   def test_delete_ok(self, store):
-    assert delete_param(store, "IsMetric")[0] == 204
+    assert delete_param(store, "IsMetric", RuntimeState(True, None), {}, {})[0] == 204
     assert b"IsMetric" not in store.data
 
   def test_delete_blocked_is_403(self, store):
-    assert delete_param(store, "GithubSshKeys")[0] == 403
+    assert delete_param(store, "GithubSshKeys", RuntimeState(True, None), {}, {})[0] == 403
 
 
 class TestList:
@@ -165,14 +165,6 @@ class TestList:
 
   def test_list_json_safe(self, store):
     json.dumps(list_params(store))
-
-
-def test_blocked_params_contains_critical_keys():
-  assert {"LanLinkParamsVersion", "GithubSshKeys",
-          "SshEnabled", "ParamsVersion", "OnroadCycleRequested",
-          "DoReboot", "DoShutdown", "DoUninstall",
-          "AccessToken", "SecOCKey", "AssistNowToken",
-          "LanLinkEnabled"} <= BLOCKED_PARAMS
 
 
 class TestReadAll:
@@ -225,11 +217,11 @@ class TestReadUnsetParam:
 class TestTypedRoundsTrip:
   def test_int_write_read(self):
     s = FakeStore(initial={"LanLinkParamsVersion": 0}, types={"LanLinkParamsVersion": INT})
-    assert write_param(s, "LanLinkParamsVersion", "0")[0] == 403  # 黑名单
+    assert write_param(s, "LanLinkParamsVersion", "0", RuntimeState(True, None), {}, {})[0] == 403
 
   def test_string_roundtrip(self):
     s = FakeStore(initial={"SomeString": "a"}, types={"SomeString": STRING})
-    code, _ = write_param(s, "SomeString", "b")
+    code, _ = write_param(s, "SomeString", "b", RuntimeState(True, None), {}, {})
     assert code == 204
     assert s.data[b"SomeString"] == "b"
     assert read_param(s, "SomeString") == (200, "b")

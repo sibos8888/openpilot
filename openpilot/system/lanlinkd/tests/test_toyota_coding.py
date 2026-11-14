@@ -42,6 +42,14 @@ class TestToyotaCanMasks:
     assert masks == {0x11: bytes.fromhex("ff0030"), 0x12: b"\x02"}
     assert coding.expand_by_mask(bytes.fromhex("a020"), masks[0x11]) == bytes.fromhex("a00020")
 
+  @pytest.mark.parametrize("compressed", [b"", b"\xa0", b"\xa0\x20\xff"])
+  def test_wrong_compressed_length_is_rejected(self, compressed):
+    with pytest.raises(ValueError):
+      coding.expand_by_mask(compressed, bytes.fromhex("ff0030"))
+
+  def test_zero_mask_bytes_need_no_response_data(self):
+    assert coding.expand_by_mask(b"", b"\x00\x00") == b"\x00\x00"
+
   @pytest.mark.parametrize("byte_index, mask, supported", [(2, 0x20, True), (2, 0x40, False), (1, 0x01, False), (3, 0x01, False)])
   def test_setting_supported_when_mask_covers_its_bits(self, byte_index, mask, supported):
     assert coding.can_setting_supported(bytes.fromhex("ff0030"), byte_index, mask) is supported

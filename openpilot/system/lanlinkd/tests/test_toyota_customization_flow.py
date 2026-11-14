@@ -5,7 +5,7 @@ import pytest
 from openpilot.system.lanlinkd.toyota import catalog
 from openpilot.system.lanlinkd.toyota import customization as cz
 from openpilot.system.lanlinkd.toyota.backups import BackupStore
-from openpilot.system.lanlinkd.toyota.link import DiagLink, EcuRejectedError
+from openpilot.system.lanlinkd.toyota.link import DiagLink, EcuRejectedError, MalformedResponseError
 
 from .toyota_fakes import FakeToyotaCanEcu, FakeEcu, FakePanda, FakeUdsEcu
 
@@ -63,6 +63,15 @@ class TestScanEcu:
     result = cz.scan_ecu(link, catalog.ecu("750/90"), [WINDOW_SETTING])
     # 压缩 a0 20 按掩码 ff 00 30 展开成 a0 00 20，第 2 字节 & 0x20 → 1
     assert result["items"] == [{"key": "car_setting_one_touch_test", "value": 1, "raw": "a00020"}]
+
+  @pytest.mark.parametrize("compressed", [b"\xa0", b"\xa0\x20\xff"])
+  def test_bad_can_length_does_not_invent_values(self, compressed):
+    window = FakeToyotaCanEcu({0x11: compressed}, {0x11: bytes.fromhex("ff0030")})
+    link = DiagLink(FakePanda({(0x750, 0x90): window}), elm327_mode=3, heartbeat_thread=False, timeout=0.02, pending_timeout=0.1)
+    result = cz.scan_ecu(link, catalog.ecu("750/90"), [WINDOW_SETTING])
+    assert result["items"] == []
+    assert result["read"] == 0
+    assert result["readError"]
 
   def test_malformed_ecu_is_reported_not_raised(self):
     # 实车：750/AD 天窗的 A8 03 应答序号错乱曾让整个扫描变成 HTTP 500
@@ -148,6 +157,21 @@ class TestWriteSetting:
     assert (result["verified"], result["value"], result["after"]) == (True, 0, "a00000")
     assert window.memory[0x11] == bytes.fromhex("a000")
     assert bytes.fromhex("3b11a00000") in window.requests
+
+  @pytest.mark.parametrize("compressed", [b"\xa0", b"\xa0\x20\xff"])
+  @pytest.mark.parametrize("operation", ["write", "restore"])
+  def test_bad_can_length_blocks_backup_and_write(self, tmp_path, compressed, operation):
+    window = FakeToyotaCanEcu({0x11: compressed}, {0x11: bytes.fromhex("ff0030")})
+    link = DiagLink(FakePanda({(0x750, 0x90): window}), elm327_mode=3, heartbeat_thread=False, timeout=0.02, pending_timeout=0.1)
+    backups = BackupStore(str(tmp_path))
+    with pytest.raises(MalformedResponseError):
+      if operation == "write":
+        cz.write_setting(link, catalog.ecu("750/90"), WINDOW_SETTING, 0, "a00020", backups)
+      else:
+        cz.restore_setting(link, catalog.ecu("750/90"), WINDOW_SETTING, {"data": "a00020"}, backups)
+    assert not any(request[0] == 0x3B for request in window.requests)
+    assert window.memory[0x11] == compressed
+    assert not list(tmp_path.iterdir())
 
   def test_restore_backs_up_current_value_then_writes_backup_back(self, tmp_path):
     fake, link = _body_ecu_link()

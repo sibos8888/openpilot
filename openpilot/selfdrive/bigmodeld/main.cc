@@ -52,6 +52,7 @@
 
 #include <media/msm_media_info.h>
 
+#include "encoder_bitrate.h"
 #include "frame_codec.h"
 #include "frame_meta.h"
 #include "frame_scheduler.h"
@@ -548,6 +549,7 @@ class Bigmodeld {
   void calib_thread() {
     SubMaster sm({"extrinsicsCalibration", "modelDataV2SP", "deviceMotion"},
                  {"extrinsicsCalibration", "modelDataV2SP"});
+    Params params;
     // 车体系换算用的 rpyCalib：与 MetaProvider.set_rpy 同一份（最近一条 extrinsics）。
     float rpy[3] = {0.f, 0.f, 0.f};
     // m-b：只有 calStatus==invalid 禁用 yaw/speed；uncalibrated/recalibrating 照常用当前 rpy。
@@ -557,6 +559,7 @@ class Bigmodeld {
       sm.update(1000);
       // P2：mem Params 的文件 I/O 全在非实时 calib 线程；本线程本来就被 20 Hz 节拍源唤醒
       write_pending_map_targets();
+      desired_bitrate_.store(select_bitrate(params.get("BigmodelEncoderBitrate"), bitrate_), std::memory_order_relaxed);
       if (sm.updated("extrinsicsCalibration")) {
         auto c = sm["extrinsicsCalibration"].getExtrinsicsCalibration();
         auto calib_rpy = c.getRpyCalib();
@@ -752,15 +755,8 @@ class Bigmodeld {
     need_req_wide_ |= s.request_keyframe_wide;
   }
 
-  // Params "BigmodelEncoderBitrate" 每帧读（仿 encoderd.cc:54-60）；--bitrate 为初值
   void update_bitrate_locked() {
-    static Params params;
-    int b = bitrate_;
-    std::string val = params.get("BigmodelEncoderBitrate");
-    if (!val.empty()) {
-      int v = std::atoi(val.c_str());
-      if (v > 0) b = v;
-    }
+    const int b = desired_bitrate_.load(std::memory_order_relaxed);
     if (b == cur_bitrate_) return;
     ctx_[kRoad].enc->set_bitrate(b);
     ctx_[kWide].enc->set_bitrate(b);
@@ -1080,8 +1076,9 @@ class Bigmodeld {
   std::vector<UplinkEventInfo> evs_;
 
   EncoderCtx ctx_[2];
-  int bitrate_;
+  const int bitrate_;
   int cur_bitrate_;
+  std::atomic<int> desired_bitrate_{bitrate_};
 };
 
 void usage() {

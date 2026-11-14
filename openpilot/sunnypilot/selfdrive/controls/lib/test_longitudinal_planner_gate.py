@@ -6,6 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 """
 from unittest.mock import Mock, patch
 
+import pytest
+
 from openpilot.cereal import custom, messaging
 from opendbc.car import structs
 from openpilot.common.test import OpenpilotTestCase
@@ -120,3 +122,24 @@ class TestPlannerGate(OpenpilotTestCase):
         assert planner.source == source
         assert planner.output_v_target == 10.0
         assert (planner.mpc.source == LongitudinalPlanSource.e2e) == experimental_mode
+
+  def test_published_processing_delay_is_seconds(self):
+    planner = build_planner()
+    sm = build_sm()
+    sm.logMonoTime['modelV2'] = 10_000_000_000
+    planner.update(sm)
+    pm = Mock()
+    new_message = messaging.new_message
+
+    def timed_message(service):
+      msg = new_message(service)
+      msg.logMonoTime = 10_050_000_000
+      return msg
+
+    with patch('openpilot.selfdrive.controls.lib.longitudinal_planner.messaging.new_message', side_effect=timed_message):
+      planner.publish(sm, pm)
+
+    published = {service: msg for (service, msg), _ in pm.send.call_args_list}
+    plan = published['longitudinalPlan'].longitudinalPlan
+    assert plan.modelMonoTime == 10_000_000_000
+    assert plan.processingDelay == pytest.approx(0.05)

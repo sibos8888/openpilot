@@ -56,8 +56,11 @@ def parse_masks(response: bytes) -> dict[int, bytes]:
 
 
 def expand_by_mask(compressed: bytes, mask: bytes) -> bytes:
+  expected = sum(bool(m) for m in mask)
+  if len(compressed) != expected:
+    raise ValueError(f"压缩数据应为 {expected} 字节，实际为 {len(compressed)} 字节")
   values = iter(compressed)
-  return bytes(next(values, 0) if m else 0 for m in mask)
+  return bytes(next(values) if m else 0 for m in mask)
 
 
 def can_setting_supported(mask_entry: bytes, byte_index: int, mask: int) -> bool:

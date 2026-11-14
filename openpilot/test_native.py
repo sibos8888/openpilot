@@ -8,6 +8,7 @@ from openpilot.common.test import OpenpilotTestCase
 
 NATIVE_TESTS = (
   "openpilot/common/tests/test_swaglog",
+  "openpilot/common/tests/test_params",
   "openpilot/selfdrive/pandad/tests/test_pandad_canprotocol",
   "openpilot/tools/cabana/tests/test_dbc_core",
 )

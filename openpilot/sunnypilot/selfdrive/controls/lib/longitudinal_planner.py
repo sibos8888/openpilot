@@ -23,7 +23,6 @@ LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 class LongitudinalPlannerSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
     self.events_sp = EventsSP()
-    self.resolver = SpeedLimitResolver()
     self.scc = SmartCruiseControl()
     self.resolver = SpeedLimitResolver()
     self.sla = SpeedLimitAssist(CP, CP_SP)

@@ -60,11 +60,15 @@ function isSessionGone(e: unknown): boolean {
   return e instanceof ApiError && e.status === 409;
 }
 
+let customizationGen = 0;
+let dtcGen = 0;
+
 /** 逐个 ECU 读定制项当前值。单个 ECU 失败只记下来继续；会话没了（409）就中止，这次扫描作废（回到 idle）。 */
 export async function scanCustomizations(): Promise<void> {
   const catalog = toyotaData.catalog;
   const c = toyotaData.customization;
   if (!catalog || c.state === "scanning") return;
+  const gen = customizationGen;
   c.state = "scanning";
   c.statuses = [];
   c.unreachable = [];
@@ -72,11 +76,13 @@ export async function scanCustomizations(): Promise<void> {
   for (const ecu of ecusWithSettings(catalog.ecus, catalog.settings)) {
     try {
       const r = await api.toyotaScanCustomizations(ecu.id);
+      if (gen !== customizationGen) return;
       c.statuses.push(r.status);
       toyotaData.ecuAnswered[ecu.id] = r.status === "ok";
       if (r.status !== "ok") c.unreachable.push(ecu);
       for (const it of r.items) c.values[it.key] = { value: it.value, raw: it.raw };
     } catch (e) {
+      if (gen !== customizationGen) return;
       if (isSessionGone(e)) {
         c.state = "idle";
         return;
@@ -94,12 +100,16 @@ export async function scanDtcs(): Promise<void> {
   const catalog = toyotaData.catalog;
   const d = toyotaData.dtc;
   if (!catalog || d.state === "scanning") return;
+  const gen = dtcGen;
   d.state = "scanning";
   d.scans = [];
   for (const ecu of catalog.ecus) {
     try {
-      d.scans.push(await api.toyotaScanDtc(ecu.id));
+      const scan = await api.toyotaScanDtc(ecu.id);
+      if (gen !== dtcGen) return;
+      d.scans.push(scan);
     } catch (e) {
+      if (gen !== dtcGen) return;
       if (isSessionGone(e)) {
         d.state = "idle";
         return;
@@ -128,12 +138,15 @@ export function applyWriteResult(setting: ToyotaSetting, afterRaw: string): void
   Object.assign(c.values, settingValuesAfterRawChange(toyotaData.catalog?.settings ?? [], setting, afterRaw, c.values));
 }
 
-/** 扫描结果作废：写入以外的途径（恢复备份）改了车上的值，下次进定制页重新扫描 */
+/** 扫描结果作废：写入以外的途径（恢复备份）改了车上的值，或写入 / 恢复结果不确定，下次进定制页重新扫描 */
 export function invalidateCustomizationScan(): void {
+  customizationGen++;
   toyotaData.customization.state = "idle";
 }
 
 export function resetScanData(): void {
+  customizationGen++;
+  dtcGen++;
   toyotaData.ecuAnswered = {};
   const c = toyotaData.customization;
   c.state = "idle";

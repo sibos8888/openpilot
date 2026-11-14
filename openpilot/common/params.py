@@ -170,13 +170,18 @@ class Params:
     return ensure_bytes(self.python2cpp(type(dat), self.get_type(key), dat, key))
 
   def put(self, key, dat, block=False):
-    """Write a parameter. block=True waits until it is persisted to disk."""
+    """Write a parameter. block=True persists to disk or raises OSError."""
     k = self.check_key(key)
     value = self._put_cast(k, dat)
-    params_put(self.p, k, value, len(value), block)
+    result = params_put(self.p, k, value, len(value), block)
+    if block and result < 0:
+      raise OSError(f"param {key} not persisted (rc={result})")
 
   def put_bool(self, key, val, block=False):
-    params_put_bool(self.p, self.check_key(key), val, block)
+    """Write a boolean. block=True persists to disk or raises OSError."""
+    result = params_put_bool(self.p, self.check_key(key), val, block)
+    if block and result < 0:
+      raise OSError(f"param {key} not persisted (rc={result})")
 
   def remove(self, key):
     params_remove(self.p, self.check_key(key))

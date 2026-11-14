@@ -91,32 +91,54 @@ export async function loadAll(): Promise<void> {
   }
 }
 
+let paramsGen = 0;
+
+/** 手动刷新只有在快照实际落地后才成功；被并发操作作废时交给调用方提示失败。 */
 export async function refreshParams(): Promise<void> {
-  state.params = await api.allParams();
+  const gen = paramsGen;
+  const params = await api.allParams();
+  if (gen !== paramsGen || state.pending.size) throw new Error("参数状态已变化，刷新结果未应用，请重试");
+  paramsGen++;
+  state.params = params;
 }
 
-export async function refreshCapabilities(): Promise<void> {
-  state.caps = await api.capabilities();
+let statusPoll: Promise<void> | null = null;
+
+/** 状态轮询：顺带用 paramsVersion 察觉设备端改动。同一时刻只跑一轮，重叠调用共用这一轮。 */
+export function pollStatus(): Promise<void> {
+  statusPoll ??= pollStatusOnce().finally(() => {
+    statusPoll = null;
+  });
+  return statusPoll;
 }
 
-/** 状态轮询：顺带用 paramsVersion 察觉设备端改动 */
-export async function pollStatus(): Promise<void> {
+async function pollStatusOnce(): Promise<void> {
+  let s: StatusSnapshot;
   try {
-    const s = await api.status();
-    state.status = s;
-    state.connected = true;
-
-    const seen = state.paramsVersion;
-    if (s.paramsVersion !== undefined && s.paramsVersion !== seen) {
-      const first = seen === null || seen === undefined;
-      state.paramsVersion = s.paramsVersion;
-      // 首次只记录基线；之后的变化说明车机端改过设置，要同步过来
-      if (!first && state.ready) {
-        await Promise.all([refreshParams(), refreshCapabilities()]);
-      }
-    }
-  } catch (e) {
+    s = await api.status();
+  } catch {
     state.connected = false;
+    return;
+  }
+  state.status = s;
+  state.connected = true;
+  if (s.capabilities) state.caps = s.capabilities;
+
+  const version = s.paramsVersion;
+  if (version === undefined || version === state.paramsVersion) return;
+  if (state.paramsVersion === null || state.paramsVersion === undefined || !state.ready) {
+    state.paramsVersion = version;
+    return;
+  }
+  const gen = paramsGen;
+  try {
+    const [params, caps] = await Promise.all([api.allParams(), api.capabilities()]);
+    if (gen !== paramsGen || state.pending.size) return;
+    paramsGen++;
+    state.params = params;
+    state.caps = caps;
+    state.paramsVersion = version;
+  } catch {
   }
 }
 
@@ -141,6 +163,8 @@ export function isPending(key: string): boolean {
 
 /** 乐观写入；失败回滚并给出设备返回的原因 */
 export async function writeParam(key: string, value: string): Promise<boolean> {
+  if (state.pending.has(key)) return false;
+  paramsGen++;
   const previous = state.params[key];
   state.params[key] = value;
   state.pending.add(key);
@@ -148,7 +172,6 @@ export async function writeParam(key: string, value: string): Promise<boolean> {
     await api.putParam(key, value);
     return true;
   } catch (e) {
-    // 回滚：设备拒绝了（403 blocked / 400 类型不符 / 404 未知 key）
     if (previous === undefined) delete state.params[key];
     else state.params[key] = previous;
 
@@ -169,6 +192,8 @@ function describeWriteError(e: ApiError, key: string): string {
       return `「${key}」的值不合法`;
     case 404:
       return `设备上不存在「${key}」`;
+    case 409:
+      return `「${key}」现在不能修改：${e.message}`;
     case 429:
       return "操作过于频繁，请稍后再试";
     default:

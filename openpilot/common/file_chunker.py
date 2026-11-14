@@ -32,12 +32,28 @@ def chunk_file(path, targets):
   os.remove(path)
 
 def get_existing_chunks(path):
+  """Return build dependencies, including the manifest and all declared chunks."""
   if os.path.isfile(path):
     return [path]
   if os.path.isfile(manifest := get_manifest_path(path)):
     num_chunks = int(Path(manifest).read_text().strip())
+    if num_chunks < 1:
+      raise ValueError(f"Invalid chunk count in {manifest}: {num_chunks}")
     return _chunk_paths(path, num_chunks)
   raise FileNotFoundError(path)
+
+def chunked_file_exists(path) -> bool:
+  """Return whether the complete file or every declared chunk is readable."""
+  try:
+    paths = get_existing_chunks(path)
+    for p in paths:
+      if not os.path.isfile(p):
+        return False
+      with open(p, 'rb'):
+        pass
+  except (OSError, ValueError):
+    return False
+  return True
 
 class ChunkStream(io.RawIOBase):
   def __init__(self, paths):
@@ -47,7 +63,16 @@ class ChunkStream(io.RawIOBase):
   def readable(self):
     return True
 
+  def close(self):
+    try:
+      if self._f is not None:
+        self._f.close()
+        self._f = None
+    finally:
+      super().close()
+
   def readinto(self, b):
+    self._checkClosed()
     n = 0
     view = memoryview(b)
     while n < len(b):
@@ -65,14 +90,9 @@ class ChunkStream(io.RawIOBase):
     return n
 
 def open_file_chunked(path):
-  manifest_path = get_manifest_path(path)
-  if os.path.isfile(manifest_path):
-    num_chunks = int(Path(manifest_path).read_text().strip())
-    paths = [get_chunk_name(path, i, num_chunks) for i in range(num_chunks)]
-  elif os.path.isfile(path):
-    paths = [path]
-  else:
-    raise FileNotFoundError(path)
+  paths = get_existing_chunks(path)
+  if paths[0] == get_manifest_path(path):
+    paths = paths[1:]
   return io.BufferedReader(ChunkStream(paths))
 
 

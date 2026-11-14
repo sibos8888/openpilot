@@ -7,17 +7,18 @@ tie 压力矩阵）。每矩阵一帧 packed6（196608 B）。tinygrad 后端经
 默认走 Mac DEFAULT_DEVICE），生成一次入库；验收口径见 test_warp_golden.cc。
 
 用法：python3 openpilot/selfdrive/bigmodeld/make_warp_golden.py
-依赖：numpy + zstandard + tinygrad 源码树（见 TINYGRAD）。
+依赖：numpy + zstandard + 本仓 tinygrad_repo 子模块。
 """
 import importlib.util
 import os
+import subprocess
 import sys
 
 import numpy as np
 
-TINYGRAD = '/Users/kevin/Documents/Projects/tinygrad'
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
+TINYGRAD = os.path.join(REPO, 'tinygrad_repo')
 LM = os.path.join(REPO, 'openpilot/selfdrive/modeld/compile_modeld.py')
 W, H, MW, MH = 1344, 760, 512, 256  # fixture 几何，与相机型号无关（test_warp_golden.cc kW/kH 同值）
 PW, PH = MW // 2, MH // 2
@@ -41,8 +42,14 @@ def lcg_frame() -> np.ndarray:
 
 
 def load_lm():
+    if not os.path.isfile(os.path.join(TINYGRAD, 'tinygrad', '__init__.py')):
+        raise FileNotFoundError(f'repository tinygrad submodule missing: {TINYGRAD}')
     sys.path.insert(0, TINYGRAD)
     sys.path.insert(0, REPO)  # `openpilot` 包根
+    import tinygrad
+    source = os.path.realpath(tinygrad.__file__)
+    if os.path.commonpath([source, os.path.realpath(TINYGRAD)]) != os.path.realpath(TINYGRAD):
+        raise RuntimeError(f'tinygrad loaded outside repository submodule: {source}')
     spec = importlib.util.spec_from_file_location('lm_compile', LM)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -55,9 +62,12 @@ def main():
     frame = lcg_frame()
 
     mod = load_lm()
+    import tinygrad
     from tinygrad.device import Device
     from tinygrad.tensor import Tensor
     print(f'tinygrad DEFAULT_DEVICE={Device.DEFAULT} (DEV env={os.environ.get("DEV", "<default>")})')
+    revision = subprocess.check_output(['git', '-C', TINYGRAD, 'rev-parse', 'HEAD'], text=True).strip()
+    print(f'tinygrad source={tinygrad.__file__} revision={revision}')
 
     nv = mod.NV12Frame(width=W, height=H, stride=W, y_height=H, uv_height=H // 2,
                        size=W * H * 3 // 2)

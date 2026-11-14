@@ -355,7 +355,7 @@ class LateralLagEstimator:
     good_lag_candidate_mask = confidence_roi_ncc >= ncc_thresh
     good_lag_candidate_edges = np.diff(good_lag_candidate_mask.astype(int), prepend=0, append=0)
     starts, ends = np.where(good_lag_candidate_edges == 1)[0], np.where(good_lag_candidate_edges == -1)[0] - 1
-    run_idx = np.searchsorted(starts, max_corr_index + CORR_BORDER_OFFSET, side='right') - 1
+    run_idx = np.searchsorted(starts, max_corr_index + roi.start - confidence_roi.start, side='right') - 1
     width = ends[run_idx] - starts[run_idx] + 1
     confidence = np.clip(1 - width * dt, 0, 1)
 

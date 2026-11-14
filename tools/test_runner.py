@@ -2,6 +2,8 @@
 import argparse
 from collections import Counter
 from concurrent.futures import as_completed, ProcessPoolExecutor
+import importlib
+import inspect
 from itertools import batched
 import math
 import os
@@ -134,6 +136,34 @@ def module_name(path):
   return ".".join(path.resolve().relative_to(ROOT).with_suffix("").parts)
 
 
+def unsupported_pytest_tests(name):
+  parts = name.split(".")
+  while parts:
+    try:
+      module = importlib.import_module(".".join(parts))
+      break
+    except ImportError:
+      parts.pop()
+  else:
+    return []
+
+  if not getattr(module, "__test__", True):
+    return []
+  unsupported = []
+  for attr, obj in vars(module).items():
+    if not getattr(obj, "__test__", True):
+      continue
+    if attr.startswith("test") and inspect.isfunction(obj):
+      unsupported.append(f"{module.__name__}.{attr}")
+    elif attr.startswith("Test") and inspect.isclass(obj) and not issubclass(obj, unittest.TestCase):
+      unsupported.extend(
+        f"{module.__name__}.{attr}.{method}"
+        for method, value in inspect.getmembers(obj)
+        if method.startswith("test") and callable(value) and getattr(value, "__test__", True)
+      )
+  return unsupported
+
+
 def collect(targets, keyword):
   use_ignores = not targets
   targets = targets or ["openpilot"]
@@ -161,6 +191,18 @@ def collect(targets, keyword):
   for name in dict.fromkeys(names):
     before = len(loader.errors)
     try:
+      unsupported = [
+        test_id for test_id in unsupported_pytest_tests(name)
+        if (test_id == name or test_id.startswith(name + "."))
+        and (not keyword or keyword.lower() in test_id.lower())
+      ]
+      if unsupported:
+        errors.append(
+          f"{name}: unsupported pytest tests would be omitted by the unittest runner:\n"
+          + "\n".join(f"  {test_id}" for test_id in unsupported)
+          + "\nRun this module with python -m pytest instead."
+        )
+        continue
       suite = loader.loadTestsFromName(name)
     except Exception:
       errors.append(f"Failed to collect {name}\n{traceback.format_exc()}")
