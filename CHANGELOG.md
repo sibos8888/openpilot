@@ -19,6 +19,7 @@ C3XL (unreleased)
 * Device settings fix extended-layout refresh crashes; compact UI replays refresh offroad alerts synchronously.
 * LANLink offers manual retry after interrupted Toyota customization scans and restores schema-declared numeric defaults by removing the parameter.
 * Regression tests cover native parameter storage, deterministic external-log deletion, and complete sensor interrupt events.
+* Vehicle pose estimation uses the upstream 0.1 rad/s initial gyroscope bias uncertainty on cold start and default reset, while preserving restored filter state.
 
 sunnypilot Version 2026.002.000 (2026-06-28)
 ========================
