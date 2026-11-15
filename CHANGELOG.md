@@ -14,11 +14,9 @@ C3XL (unreleased)
 * LANLink shows persistent telemetry failures, blocks repeated pending writes, and invalidates diagnostic scans after uncertain ECU writes or restores.
 * Model selection rejects non-finite remote outputs, shares complete-file and chunked-file selection, applies configured model latency, and reads encoder bitrate settings outside the frame-pairing lock.
 * Control and localization fixes avoid duplicate lateral-state updates, use GPS timestamps in the same clock domain, restore covariance from squared standard deviations, and reset non-finite Kalman state.
-* Device UI fixes cover startup, delayed transitions, stale alerts, NPU sampling, setting confirmation, installer file ownership, and translation extraction for compact and extended layouts.
 * System services fix sensor failure handling, Bluetooth pairing concurrency, NMEA validation, bookmark freshness, segment ordering, and process-cache identity.
 * Toyota radar deinitialization restores communication through the correct callbacks. SPI receive paths reject invalid lengths before copying, and safety replay reports failures across every requested route.
 * Developer tools fix checkout and worktree handling, release failure reporting, selected-test collection, log extraction, and HTTP range reads. Documentation now identifies unsupported legacy workflows.
-* Device settings fix extended-layout refresh crashes; compact UI replays refresh offroad alerts synchronously.
 * LANLink offers manual retry after interrupted Toyota customization scans and restores schema-declared numeric defaults by removing the parameter.
 * Regression tests cover native parameter storage, deterministic external-log deletion, and complete sensor interrupt events.
 * Vehicle pose estimation uses the upstream 0.1 rad/s initial gyroscope bias uncertainty on cold start and default reset, while preserving restored filter state.
