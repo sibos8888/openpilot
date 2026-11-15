@@ -23,6 +23,7 @@ C3XL (unreleased)
 * Regression tests cover native parameter storage, deterministic external-log deletion, and complete sensor interrupt events.
 * Vehicle pose estimation uses the upstream 0.1 rad/s initial gyroscope bias uncertainty on cold start and default reset, while preserving restored filter state.
 * Panda SPI communication adopts upstream CRC32-protected requests, response replay for retries, and chip-select synchronization; startup recovers incompatible firmware through the ST bootloader while preserving diagnostic shutdown handling.
+* Reset the internal panda after DFU recovery so C3XL starts the new bootstub without timing out and repeating the flash cycle.
 
 sunnypilot Version 2026.002.000 (2026-06-28)
 ========================

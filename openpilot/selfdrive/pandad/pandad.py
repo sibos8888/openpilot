@@ -52,6 +52,9 @@ def flash_panda() -> None:
   with PandaDFU(None) as dfu:
     dfu.recover()
 
+  # On tici, jumping from the ROM loader can leave bootstub unreachable until a hardware reset.
+  HARDWARE.reset_internal_panda()
+
   assert Panda.wait_for_panda(None, timeout=PANDA_BOOT_TIMEOUT_S), "panda didn't boot into bootstub"
   panda_serials = check_panda_support(Panda.list())
   assert len(panda_serials) == 1, "no supported internal panda found after recovery"

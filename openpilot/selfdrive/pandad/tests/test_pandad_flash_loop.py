@@ -92,7 +92,7 @@ class Loop:
       @classmethod
       def list(cls, usb_only=False):
         hardware.polls_since_reset += 1
-        ready = loop.protocol_ready and "reset" in hardware.calls and hardware.polls_since_reset >= boot_polls
+        ready = loop.protocol_ready and hardware.calls[-1:] == ["reset"] and hardware.polls_since_reset >= boot_polls
         return [SERIAL] if ready else []
 
     class FakeDFU:
@@ -195,7 +195,6 @@ def test_waits_for_tici_panda_that_enumerates_10s_after_reset(monkeypatch):
 def test_recovers_bootstub_and_app_before_launching_pandad(monkeypatch, legacy_protocol):
   loop = Loop(monkeypatch, needs_flash=True, legacy_protocol=legacy_protocol)
   pandad_mod.main()
-  assert loop.hardware.calls == ["reset", "recover"]
   assert loop.dfu_recoveries == 1
   assert loop.flashed == [SERIAL]
   assert loop.current and not loop.bootstub
