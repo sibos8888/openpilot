@@ -120,6 +120,10 @@ class LanlinkApp:
       self.params, key, self.cache.runtime_state(), self._schema_items, self.cache.capabilities())
     return empty(status=204) if code == 204 else _json_error(code, "denied")
 
+  async def params_restore_defaults(self, request: Request) -> HTTPResponse:
+    code, message = params_api.restore_defaults(self.params, self.cache.runtime_state())
+    return empty(status=204) if code == 204 else _json_error(code, message)
+
   # ---- vehicle（指纹 / 平台选择）----
   async def vehicle_get(self, request: Request) -> HTTPResponse:
     return json_response(vehicle_api.vehicle_state(self.params))
@@ -362,6 +366,7 @@ ROUTES: tuple[tuple[str, str, str], ...] = (
   ("GET", "/api/params/<key:str>", "params_get"),
   ("PUT", "/api/params/<key:str>", "params_put"),
   ("DELETE", "/api/params/<key:str>", "params_delete"),
+  ("POST", "/api/settings/restore_defaults", "params_restore_defaults"),
   ("GET", "/api/vehicle", "vehicle_get"),
   ("POST", "/api/vehicle/select", "vehicle_select"),
   ("GET", "/api/bluetooth", "bluetooth_get"),

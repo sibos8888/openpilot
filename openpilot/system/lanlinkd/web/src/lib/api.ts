@@ -55,6 +55,8 @@ export const api = {
       body: JSON.stringify({ value }),
     }),
   getParam: (key: string) => request<{ value: string }>(`/api/params/${encodeURIComponent(key)}`),
+  // 停车时把预设项强制写回设备默认值；onroad 返回 409
+  restoreDefaults: () => post<null>("/api/settings/restore_defaults"),
 
   // ---- vehicle ----
   vehicle: () => request<VehicleState>("/api/vehicle"),

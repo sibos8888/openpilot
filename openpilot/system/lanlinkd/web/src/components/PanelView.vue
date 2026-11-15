@@ -11,6 +11,7 @@ import VehiclePanel from "./VehiclePanel.vue";
 import StatusPanel from "./StatusPanel.vue";
 import DiagnosticsPanel from "./diagnostics/DiagnosticsPanel.vue";
 import ToyotaPanel from "./toyota/ToyotaPanel.vue";
+import RestoreDefaultsCard from "./RestoreDefaultsCard.vue";
 import Badge from "./ui/Badge.vue";
 import { itemState } from "@/lib/itemState";
 import { store } from "@/lib/store";
@@ -67,6 +68,7 @@ const showBrand = computed(() => brandSettings.value && props.panel.id === "togg
 
     <!-- 显示页：参数分区之后接开机画面（改 splash 分区，走 /api/splash） -->
     <SplashCard v-if="panel.id === 'display'" />
+    <RestoreDefaultsCard v-if="panel.id === 'steering'" />
 
     <!-- 车型专属：按 capabilities.brand 选取 -->
     <section v-if="showBrand && brandSettings" class="sl-card px-5 py-4">

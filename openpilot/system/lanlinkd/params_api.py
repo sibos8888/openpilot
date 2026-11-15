@@ -40,6 +40,15 @@ BLOCKED_PARAMS = {
   "SshEnabled",            # SSH 开关
 }
 
+# 「恢复默认设置」强制覆盖的参数；取值以 params_keys.h 的默认值为准，这里只列 key。
+RESTORE_DEFAULT_KEYS = (
+  "EnforceTorqueControl", "LateralJerkTorqueController", "LiveTorqueParamsToggle",
+  "LiveTorqueParamsRelaxedToggle", "SpeedDependentTorqueToggle", "CustomTorqueParams",
+  "TorqueParamsOverrideEnabled", "TorqueParamsOverrideLatAccelFactor", "TorqueParamsOverrideFriction",
+  "TorqueControlTune", "RoadEdgeLaneChangeEnabled", "IsMetric", "CarPlatformBundle",
+  "BlindSpot", "TorqueBar", "ShowTurnSignals", "GreenLightAlert", "LeadDepartAlert",
+)
+
 _TYPE_NAMES = {0: "STRING", 1: "BOOL", 2: "INT", 3: "FLOAT", 4: "TIME", 5: "JSON", 6: "BYTES"}
 _BOOL_ON = ("1", "true", "on")
 _BOOL_OFF = ("0", "false", "off")
@@ -300,3 +309,13 @@ def delete_param(store, key: str, runtime: RuntimeState,
   store.remove(key)
   _bump_version(store)
   return 204, None
+
+
+def restore_defaults(store, runtime: RuntimeState) -> tuple[int, str]:
+  """把 RESTORE_DEFAULT_KEYS 强制写回默认值（已设置过的也覆盖）。扭矩项只能停车时改，整体限停车。"""
+  if not runtime.offroad:
+    return 409, "device state does not allow this change"
+  for key in RESTORE_DEFAULT_KEYS:
+    store.put(key, store.get_default_value(key), block=True)
+  _bump_version(store)
+  return 204, ""
