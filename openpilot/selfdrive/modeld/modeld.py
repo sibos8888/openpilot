@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from collections.abc import Callable
+from functools import partial
 import os
 import time
 import numpy as np
@@ -21,6 +22,7 @@ from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.camera_offset_helper import CameraOffsetHelper
+from openpilot.selfdrive.modeld.blendful import Blendful
 from openpilot.selfdrive.modeld.big_model import (SourceBlender, BigReplyLatch, FrameDelayEstimator,
                                                   ms_since_eof, nanos_since_boot, select_frame)
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, nv12_copy_size, MODELD_INPUTS
@@ -108,7 +110,8 @@ class ModelState:
     self.run_model = jits['run_model'][(cam_w, cam_h)]
 
   def get_action_from_model(self, model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
-                            lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+                            lat_action_t: float, long_action_t: float, v_ego: float,
+                            blendful: Callable[[float], float] | None = None) -> log.ModelDataV2.Action:
     if 'action' not in model_output:
       plan = model_output['plan'][0]
       desired_accel = get_accel_from_plan(plan[:,Plan.VELOCITY][:,0],
@@ -119,6 +122,8 @@ class ModelState:
     else:
       desired_accel = model_output['action'][0,1]
       desired_curvature = model_output['action'][0,0] / (max(1.0, v_ego))**2
+    if blendful is not None:
+      desired_curvature += blendful(desired_curvature)
     stop = should_stop(v_ego, desired_accel)
     desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, self.LONG_SMOOTH_SECONDS)
     if v_ego > MIN_LAT_CONTROL_SPEED:
@@ -231,6 +236,8 @@ def main(demo=False):
   # 关 = 完全 lean-master 行为：不等大模型 REPLY、不取结果，逐帧小模型。
   # 默认关（同 AdbEnabled：注册无默认值，get_bool 缺省键返 False）
   bigmodel_enabled = params.get_bool("BigmodelToggle")
+  # Blendful 车道居中修正只跟小模型走：Chipmunk 关闭时恒开、打开时不建实例，大模型链路（含断链回退的小模型帧）都不接入
+  blendful = None if bigmodel_enabled else Blendful()
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
@@ -358,12 +365,16 @@ def main(demo=False):
 
       if not sm['carControl'].latActive:
         prev_action.desiredCurvature = sm['controlsState'].curvature
+      blendful_correction = None
+      if blendful is not None:
+        blendful_active = desire == log.Desire.none and DH.lane_change_state == log.LaneChangeState.off
+        blendful_correction = partial(blendful.update, model_output, v_ego, blendful_active)
       frame = select_frame(
         model_output, latch=latch, enabled=bigmodel_enabled, run_count=run_count,
         timestamp_eof=meta_main.timestamp_eof, deadline_after_eof_ms=BIG_REPLY_DEADLINE_MS,
         warmup_frames=BIG_WARMUP_FRAMES, current_time_ns=nanos_since_boot, blender=blender,
-        action_for=lambda output, lat_t, long_t, prev_action=prev_action, v_ego=v_ego:
-          model.get_action_from_model(output, prev_action, lat_t, long_t, v_ego),
+        action_for=lambda output, lat_t, long_t, prev_action=prev_action, v_ego=v_ego, correction=blendful_correction:
+          model.get_action_from_model(output, prev_action, lat_t, long_t, v_ego, correction),
         action_t=(lat_action_t, long_action_t))
       blended, big_out, eof_to_reply_ms = frame.model_output, frame.big_output, frame.eof_to_reply_ms
       if SEND_RAW_PRED and 'raw_pred' not in blended:
@@ -400,6 +411,14 @@ def main(demo=False):
       mdv2sp_send.modelDataV2SP.cameraToModelMs = camera_to_model_ms
       mdv2sp_send.modelDataV2SP.bigSource = frame.source
       mdv2sp_send.modelDataV2SP.bigDeadlineMs = frame.deadline_ms
+      if blendful is not None:
+        mdv2sp_send.modelDataV2SP.blendfulCurvature = blendful.curvature
+        mdv2sp_send.modelDataV2SP.blendfulTrust = float(blendful.trust)
+        mdv2sp_send.modelDataV2SP.modelCurvature = float(blendful.model_curvature)
+        mdv2sp_send.modelDataV2SP.blendfulGoingAround = bool(blendful.going_around)
+        mdv2sp_send.modelDataV2SP.blendfulLeftProb = blendful.l_prob
+        mdv2sp_send.modelDataV2SP.blendfulRightProb = blendful.r_prob
+        mdv2sp_send.modelDataV2SP.blendfulLaneWidth = float(blendful.lane_width.x)
       if (stages := latch.take_stages()) is not None:
         for k, v in stages.items():
           setattr(mdv2sp_send.modelDataV2SP.bigStages, k, v)

@@ -396,6 +396,26 @@ def test_big_action_curvature_uses_lat_smooth_seconds():
   assert action.desiredCurvature == np.float32(smooth_value(0.1 / v_ego ** 2, 0.0, 0.2))
 
 
+def test_blendful_correction_sees_raw_curvature_and_is_smoothed():
+  # Blendful 吃平滑前的原始曲率，修正量和模型曲率一起进同一条 smooth 链（同上游 modeld_v2）
+  from openpilot.cereal import log
+  from openpilot.selfdrive.controls.lib.drive_helpers import smooth_value
+  from openpilot.selfdrive.modeld.modeld import ModelState
+  state = SimpleNamespace(LAT_SMOOTH_SECONDS=0.2, LONG_SMOOTH_SECONDS=0.3)
+  prev = log.ModelDataV2.Action(desiredCurvature=0.0, desiredAcceleration=0.)
+  v_ego = 5.
+  seen = []
+
+  def correction(curvature):
+    seen.append(curvature)
+    return 0.01
+
+  action = ModelState.get_action_from_model(state, {'action': np.array([[0.1, 0.]])}, prev, 0.3, 0.3, v_ego, correction)
+  assert seen == [pytest.approx(0.1 / v_ego ** 2)]
+  assert action.desiredCurvature == np.float32(smooth_value(0.1 / v_ego ** 2 + 0.01, 0.0, 0.2))
+
+
+
 def test_big_reply_latch_skips_replies_after_phone_sequence_reset():
   from openpilot.selfdrive.modeld.big_model import REPLY_FLAG_SEQ_RESET, REPLY_FLAG_ZERO_PAIR
   latch = BigReplyLatch(_FakeSM(), warmup_replies=3)
