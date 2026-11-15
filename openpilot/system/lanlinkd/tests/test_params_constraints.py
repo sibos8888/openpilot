@@ -45,11 +45,11 @@ def test_not_engaged_requires_known_disengagement(operation, engaged, expected, 
 
 
 @pytest.mark.parametrize("enabled, expected", [(True, 204), (False, 409)])
-def test_real_schema_any_uses_current_parameter(enabled, expected, schema_items):
-  store = FakeStore(initial={"TorqueParamsOverrideEnabled": enabled, "CustomTorqueParams": False},
-                    types={"TorqueParamsOverrideEnabled": BOOL, "CustomTorqueParams": BOOL,
-                           "TorqueParamsOverrideFriction": FLOAT})
-  assert write_param(store, "TorqueParamsOverrideFriction", "0.2", RuntimeState(False, True), schema_items, {})[0] == expected
+def test_any_rule_uses_current_parameter(enabled, expected):
+  items = index_items({"items": [{"key": "Target", "enablement": [
+    {"type": "any", "conditions": [{"type": "param", "key": "Gate", "equals": True}, OFFROAD]}]}]})
+  store = FakeStore(initial={"Gate": enabled}, types={"Gate": BOOL, "Target": FLOAT})
+  assert write_param(store, "Target", "0.2", RuntimeState(False, True), items, {})[0] == expected
   assert store.versions == (expected == 204)
 
 
@@ -122,17 +122,18 @@ def test_device_constraint_inherited_through_schema_containers(container):
   ("LongitudinalPersonality", INT, "3", 400),
   ("LongitudinalPersonality", INT, "2", 204),
   ("LongitudinalPersonality", INT, "1" + "0" * 400, 400),
-  ("TorqueControlTune", FLOAT, "", 204),
+  ("TorqueControlTune", FLOAT, "", 400),
   ("TorqueControlTune", FLOAT, "1", 204),
   ("TorqueControlTune", FLOAT, "1.0", 204),
   ("TorqueControlTune", FLOAT, "2", 400),
+  ("TorqueControlTune", FLOAT, "0", 204),
   ("UnlistedFloat", FLOAT, "nan", 400),
   ("UnlistedFloat", FLOAT, "", 400),
   ("CameraOffset", FLOAT, "", 400),
   ("UnlistedString", STRING, "", 204),
 ])
 def test_typed_finite_range_and_option_boundaries(schema_items, key, kind, value, expected):
-  store = FakeStore(initial={key: 1.0} if key == "TorqueControlTune" else None, types={key: kind})
+  store = FakeStore(types={key: kind})
   before = dict(store.data)
   assert write_param(store, key, value, RuntimeState(True, None), schema_items, {})[0] == expected
   if expected == 400:
@@ -140,8 +141,14 @@ def test_typed_finite_range_and_option_boundaries(schema_items, key, kind, value
     assert store.versions == 0
   else:
     assert store.versions == 1
-  if key == "TorqueControlTune" and value == "":
-    assert key.encode() not in store.data
+
+
+def test_empty_option_restores_default_by_removing_param():
+  items = index_items({"items": [{"key": "Target", "options": [{"value": "", "label": "默认"}, {"value": 1.0, "label": "v1"}]}]})
+  store = FakeStore(initial={"Target": 1.0}, types={"Target": FLOAT})
+  assert write_param(store, "Target", "", RuntimeState(True, None), items, {})[0] == 204
+  assert b"Target" not in store.data
+  assert store.versions == 1
 
 
 @pytest.mark.parametrize("key, expected", [("IsOffroad", 403), ("IsEngaged", 403), ("Missing", 404), ("Mads", 409)])

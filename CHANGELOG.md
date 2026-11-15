@@ -1,5 +1,7 @@
 C3XL (unreleased)
 ========================
+* New installs default to forced torque lateral control with the jerk-aware controller, self-tune with relaxed limits and speed-dependent bins, and torque tune v1.0. LANLink shows only the torque tune version under torque settings; the other torque options are hidden. Torque defaults are no longer cleared before the car is fingerprinted.
+* New installs default to the Toyota Sienna 2021-27 PATCHED platform, metric units, road-edge lane change blocking, blind spot warnings, the steering arc, turn signals, and the green light and lead departure alerts.
 * Blendful lane-centering correction is always active when Chipmunk is off and applies only to the small model's curvature before smoothing; with Chipmunk on it is not created, including during big-model link fallback. Telemetry and the tici onroad overlay are restored.
 * Jerk-aware torque control (v0/v1) uses one PID update in lateral-acceleration units, applies the learned acceleration offset, and preserves acceleration-space limits across torque-parameter updates.
 * Add the Toyota/Lexus Aftermarket BSM toggle from [mr-one/openpilot commit 521f60d879ae94a7373cfb5cb242a8686fc40293](https://jihulab.com/mr-one/openpilot/-/commit/521f60d879ae94a7373cfb5cb242a8686fc40293), matching `sn` HEAD `82f3bff19cbbad5917604dae318affb0a88c1e13`. Off by default to preserve factory BSM detection; enabling disables openpilot blind spot indicators and BSM-based lane change blocking without decoding aftermarket BSM signals. Changes apply after an onroad cycle.

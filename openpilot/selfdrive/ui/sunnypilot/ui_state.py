@@ -194,9 +194,8 @@ class UIStateSP:
       if not CP.enableBsm:
         self.params.remove("AutoLaneChangeBsmDelay")
     else:
-      # No CarParams: clear all car-dependent params as safety default
-      self.params.remove("EnforceTorqueControl")
-      self.params.remove("LateralJerkTorqueController")
+      # No CarParams yet: clear car-dependent params as safety default. Torque params keep their
+      # defaults; angle-steering cars clear them once fingerprinted (above and in car interfaces).
       self.params.remove("AlphaLongitudinalEnabled")
 
     # No longitudinal control: no experimental mode
