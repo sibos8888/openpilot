@@ -1,5 +1,6 @@
 C3XL (unreleased)
 ========================
+* Jerk-aware torque control (v0/v1) uses one PID update in lateral-acceleration units, applies the learned acceleration offset, and preserves acceleration-space limits across torque-parameter updates.
 * Add the Toyota/Lexus Aftermarket BSM toggle from [mr-one/openpilot commit 521f60d879ae94a7373cfb5cb242a8686fc40293](https://jihulab.com/mr-one/openpilot/-/commit/521f60d879ae94a7373cfb5cb242a8686fc40293), matching `sn` HEAD `82f3bff19cbbad5917604dae318affb0a88c1e13`. Off by default to preserve factory BSM detection; enabling disables openpilot blind spot indicators and BSM-based lane change blocking without decoding aftermarket BSM signals. Changes apply after an onroad cycle.
 * Allow factory setup and the system updater to continue without waiting for an internet connectivity check; software downloads still require network access.
 * Require AGNOS `20.2-c3xl` for startup and updates. Older AGNOS versions trigger an upgrade.

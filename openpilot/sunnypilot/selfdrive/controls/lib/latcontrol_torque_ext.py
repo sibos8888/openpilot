@@ -15,30 +15,13 @@ class LatControlTorqueExt(LatControlTorqueJerkAware, LatControlTorqueExtOverride
     LatControlTorqueJerkAware.__init__(self, lac_torque, CP, CP_SP, CI)
     LatControlTorqueExtOverride.__init__(self, CP)
 
-  def update(self, CS, VM, pid, params, ff, pid_log, setpoint, measurement, calibrated_pose, roll_compensation,
-             desired_lateral_accel, actual_lateral_accel, lateral_accel_deadzone, gravity_adjusted_lateral_accel,
-             desired_curvature, actual_curvature, steer_limited_by_safety, output_torque):
-    # Store vEgo for update_override_torque_params (which runs before this, next frame)
+  def update_feedforward(self, CS, VM, ff, desired_lateral_accel, actual_lateral_accel,
+                         lateral_accel_deadzone, gravity_adjusted_lateral_accel) -> float:
+    # Store vEgo for update_override_torque_params (which runs at the start of the next frame)
     self._last_vego = CS.vEgo
-    self._ff = ff
-    self._pid = pid
-    self._pid_log = pid_log
-    self._setpoint = setpoint
-    self._measurement = measurement
-    self._roll_compensation = roll_compensation
-    self._lateral_accel_deadzone = lateral_accel_deadzone
-    self._desired_lateral_accel = desired_lateral_accel
-    self._actual_lateral_accel = actual_lateral_accel
-    self._desired_curvature = desired_curvature
-    self._actual_curvature = actual_curvature
-    self._gravity_adjusted_lateral_accel = gravity_adjusted_lateral_accel
-    self._steer_limited_by_safety = steer_limited_by_safety
-    self._output_torque = output_torque
-
-    self.update_calculations(CS, VM, desired_lateral_accel)
-    self.update_jerk_aware_torque_control(CS, roll_compensation, gravity_adjusted_lateral_accel)
-
-    return self._pid_log, self._output_torque
+    jerk_ff = self.get_jerk_aware_feedforward(CS, VM, desired_lateral_accel, actual_lateral_accel,
+                                           lateral_accel_deadzone, gravity_adjusted_lateral_accel)
+    return ff if jerk_ff is None else jerk_ff
 
   def update_speed_dep_torque(self, tp):
     """Apply speed-dependent learned values from torqued.

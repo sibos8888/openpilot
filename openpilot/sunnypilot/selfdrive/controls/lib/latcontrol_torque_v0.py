@@ -64,7 +64,6 @@ class LatControlTorque(LatControl):
     # Override torque params from extension
     if self.extension.update_override_torque_params(self.torque_params):
       self.update_limits()
-      self.extension.update_limits()
 
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -101,18 +100,14 @@ class LatControlTorque(LatControl):
       ff += get_friction(error, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+      ff = self.extension.update_feedforward(CS, VM, ff, future_desired_lateral_accel, measurement,
+                                             lateral_accel_deadzone, gravity_adjusted_future_lateral_accel)
       output_lataccel = self.pid.update(pid_log.error,
                                        -measurement_rate,
                                         feedforward=ff,
                                         speed=CS.vEgo,
                                         freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
-
-      # Lateral acceleration torque controller extension updates
-      # Overrides pid_log.error and output_torque
-      pid_log, output_torque = self.extension.update(CS, VM, self.pid, params, ff, pid_log, setpoint, measurement, calibrated_pose, roll_compensation,
-                                                     future_desired_lateral_accel, measurement, lateral_accel_deadzone, gravity_adjusted_future_lateral_accel,
-                                                     desired_curvature, measured_curvature, steer_limited_by_safety, output_torque)
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)

@@ -97,8 +97,6 @@ class Controls(ControlsExt):
         self.LaC.update_torque_parameters(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
                                            torque_params.frictionCoefficientFiltered)
 
-        self.LaC.extension.update_limits()
-
       self.LaC.extension.update_model_v2(self.sm['modelV2'])
 
       self.LaC.extension.update_lateral_lag(self.lat_delay)

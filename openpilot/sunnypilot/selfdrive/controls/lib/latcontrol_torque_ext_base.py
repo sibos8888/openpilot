@@ -7,15 +7,11 @@ See the LICENSE.md file in the root directory for more details.
 import math
 import numpy as np
 
-from openpilot.common.pid import PIDController
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 LAT_PLAN_MIN_IDX = 5
 LATERAL_LAG_MOD = 0.0  # seconds, modifies how far in the future we look ahead for the lateral plan
-
-KP = 1.0
-KI = 0.3
 
 
 def get_predicted_lateral_jerk(lat_accels, t_diffs):
@@ -57,23 +53,7 @@ class LatControlTorqueExtBase:
     self.lateral_jerk_measurement: float = 0.0
     self.lookahead_lateral_jerk: float = 0.0
 
-    self.torque_from_lateral_accel_in_torque_space = CI.torque_from_lateral_accel_in_torque_space()
     self.torque_params = lac_torque.torque_params
-
-    self._ff = 0.0
-    self._pid = PIDController(KP, KI)
-    self._pid_log = None
-    self._setpoint = 0.0
-    self._measurement = 0.0
-    self._roll_compensation = 0.0
-    self._lateral_accel_deadzone = 0.0
-    self._desired_lateral_accel = 0.0
-    self._actual_lateral_accel = 0.0
-    self._desired_curvature = 0.0
-    self._actual_curvature = 0.0
-    self._gravity_adjusted_lateral_accel = 0.0
-    self._steer_limited_by_safety = False
-    self._output_torque = 0.0
 
     # twilsonco's Lateral Neural Network Feedforward
     # Instantaneous lateral jerk changes very rapidly, making it not useful on its own,
@@ -132,10 +112,3 @@ class LatControlTorqueExtBase:
         self.lat_accel_friction_factor = 1.0
       self.lateral_jerk_setpoint = self.lat_jerk_friction_factor * self.lookahead_lateral_jerk
       self.lateral_jerk_measurement = self.lat_jerk_friction_factor * self.actual_lateral_jerk
-
-  def update_output_torque(self, CS):
-    freeze_integrator = self._steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
-    self._output_torque = self._pid.update(self._pid_log.error,
-                                           feedforward=self._ff,
-                                           speed=CS.vEgo,
-                                           freeze_integrator=freeze_integrator)

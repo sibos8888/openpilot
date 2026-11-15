@@ -28,9 +28,8 @@ class LatControlTorqueExtOverride:
   def update_override_torque_params(self, torque_params) -> bool:
     changed = False
 
-    # Speed-dep latAccelFactor and friction: interpolate by current speed each frame.
-    # Must run here (before get_friction and torque_from_lateral_accel use
-    # torque_params) because extension.update() runs after those calls.
+    # Interpolate speed-dependent parameters using the previous active frame's speed.
+    # Apply them before feedforward calculation and the base controller's limit refresh.
     if self._speed_dep_active and self._speed_dep_speed_bp:
       new_lat_accel_factor = float(np.interp(self._last_vego, self._speed_dep_speed_bp, self._speed_dep_lat_accel_factor_bp))
       new_friction = float(np.interp(self._last_vego, self._speed_dep_speed_bp, self._speed_dep_friction_bp))
