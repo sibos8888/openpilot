@@ -1,6 +1,6 @@
 C3XL (unreleased)
 ========================
-* Home screen branding changed from MR.ONE to TOYOTA; the logo is unchanged and the banner now uses a solid-color placeholder until a custom image is supplied.
+* Home screen branding changed from MR.ONE to TOYOTA; the logo is unchanged and the banner uses a Toyota Sienna photo with a black license plate and rounded corners.
 * Userspace Bluetooth is enabled again: `launch_env.sh` no longer exports `DISABLE_BLUETOOTH`, and new installs default to `BluetoothEnabled=1`. Existing saved settings are left untouched, so switching Bluetooth off in the UI or LANLink persists across reboots. `bluetooth_managerd`, Bluetooth audio routing and the Bluetooth settings pages are therefore available.
 * New installs default to forced torque lateral control with the jerk-aware controller, self-tune with relaxed limits and speed-dependent bins, and torque tune v1.0. LANLink shows only the torque tune version under torque settings; the other torque options are hidden. Torque defaults are no longer cleared before the car is fingerprinted.
 * New installs default to the Toyota Sienna 2021-27 PATCHED platform, metric units, road-edge lane change blocking, blind spot warnings, the steering arc, turn signals, and the green light and lead departure alerts.
