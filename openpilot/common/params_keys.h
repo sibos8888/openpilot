@@ -16,7 +16,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"BluetoothAudioAddress", {PERSISTENT, STRING}},
     {"BluetoothAudioTestActive", {CLEAR_ON_MANAGER_START | DONT_LOG, BOOL}},
     {"BluetoothDisconnectControllersOffroad", {PERSISTENT, BOOL, "0"}},
-    {"BluetoothEnabled", {PERSISTENT, BOOL, "0"}},
+    {"BluetoothEnabled", {PERSISTENT, BOOL, "1"}},  // C3XL 新装默认开启；已保存的设置（含手动关闭）保持不变
     {"BootCount", {PERSISTENT, INT}},
     {"CalibrationParams", {PERSISTENT, BYTES}},
     {"CameraDebugExpGain", {CLEAR_ON_MANAGER_START, STRING}},

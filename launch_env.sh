@@ -21,16 +21,17 @@ export DISABLE_DRIVER=1
 export AGNOS_VERSION="20.2-c3xl"
 export AGNOS_ACCEPTED_VERSIONS="$AGNOS_VERSION"
 
-# Keep userspace Bluetooth disabled during the AGNOS 20.2-c3xl migration.
-export DISABLE_BLUETOOTH=1
+# C3XL 已启用用户态蓝牙。清掉可能从 AGNOS / 上游继承的 kill-switch，
+# 否则 manager 不会启动 bluetooth_managerd，soundd 也不做蓝牙音频路由。
+unset DISABLE_BLUETOOTH
 
 export STAGING_ROOT="/data/safe_staging"
 
 # Force Simplified Chinese UI on every boot.
 mkdir -p /data/params/d
 printf '%s' "zh-CHS" > /data/params/d/LanguageSetting
-printf '%s' "0" > /data/params/d/BluetoothEnabled
-printf '%s' "0" > /data/params/d/BluetoothAudioTestActive
+# BluetoothEnabled 的默认值在 params_keys.h 中设为 1（新装即开启）。
+# 这里不覆盖已保存的设置，用户在 UI / LANLink 里手动关闭后重启仍然保持关闭。
 
 # C3XL exposes the system D-Bus socket at /run/dbus.
 if [ -S /run/dbus/system_bus_socket ]; then
