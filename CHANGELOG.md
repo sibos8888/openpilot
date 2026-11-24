@@ -1,5 +1,6 @@
 C3XL (unreleased)
 ========================
+* Submodule pins synced with their upstream tracking branches: `rednose_repo` to `commaai/rednose:master` and `tinygrad_repo` to `tinygrad/tinygrad:master`. `panda` and `opendbc_repo` were already at the heads of `lean/upstream-port-2026-11`, and `msgq_repo` still tracks `sunnypilot/msgq:master`.
 * Home screen branding changed from MR.ONE to TOYOTA; the logo is unchanged and the banner uses a Toyota Sienna photo with a black license plate and rounded corners.
 * Userspace Bluetooth is enabled again: `launch_env.sh` no longer exports `DISABLE_BLUETOOTH`, and new installs default to `BluetoothEnabled=1`. Existing saved settings are left untouched, so switching Bluetooth off in the UI or LANLink persists across reboots. `bluetooth_managerd`, Bluetooth audio routing and the Bluetooth settings pages are therefore available.
 * New installs default to forced torque lateral control with the jerk-aware controller, self-tune with relaxed limits and speed-dependent bins, and torque tune v1.0. LANLink shows only the torque tune version under torque settings; the other torque options are hidden. Torque defaults are no longer cleared before the car is fingerprinted.
