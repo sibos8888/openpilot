@@ -178,10 +178,10 @@ class HomeLayout(Widget):
     gui_label(version_rect, self._version_text, 48, rl.WHITE, alignment=TextAlignment.RIGHT)
 
   def _render_home_content(self):
-    # MR.ONE branded home from c3xl-dev.
+    # TOYOTA branded home.
     font = gui_app.font(FontWeight.BOLD)
     tag_font = gui_app.font(FontWeight.NORMAL)
-    text = "Welcome to MR.ONE"
+    text = "Welcome to TOYOTA"
     tagline = "Drive smarter. Arrive safer."
     font_size = 100
     tag_font_size = 42
