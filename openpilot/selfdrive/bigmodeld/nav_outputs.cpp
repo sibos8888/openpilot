@@ -8,42 +8,24 @@
 
 namespace {
 
-constexpr float kDmPerS2ToMPerS2 = 0.1f;
-constexpr float kCurvatureX1e4ToPerM = 1e-4f;
+constexpr float kCurvatureX1e5ToPerM = 1e-5f;
 constexpr float kCentidegToDeg = 0.01f;
 constexpr float kDmToM = 0.1f;
-
-constexpr int32_t kDegreesX1e7PerDegree = 10'000'000;
-constexpr double kKphToMPerS = 1.0 / 3.6;
 
 // 事件时刻是否在 now 的 max_age 以内（事件时刻在未来 = 时钟回跳，按过期处理，安全侧）
 bool within(uint64_t event_ns, uint64_t now_ns, uint64_t max_age_ns) {
   return event_ns != 0 && now_ns >= event_ns && now_ns - event_ns <= max_age_ns;
 }
 
-bool coords_ok(double latitude_deg, double longitude_deg) {
-  return std::isfinite(latitude_deg) && std::isfinite(longitude_deg) &&
-         std::fabs(latitude_deg) <= 90.0 && std::fabs(longitude_deg) <= 180.0;
+void append_curvature_json(std::string* out, int16_t curvature_x1e5) {
+  if (curvature_x1e5 == 0) {
+    *out += '0';
+    return;
+  }
+  char buf[24];
+  std::snprintf(buf, sizeof buf, "%.5f", double(curvature_x1e5) * 1e-5);
+  *out += buf;
 }
-
-// (0,0) 是合法 WGS-84 坐标，但对本车而言只可能是「未填」；与非法坐标一样跳过（S5）
-bool point_coords_ok(int32_t latitude_deg_x1e7, int32_t longitude_deg_x1e7) {
-  const double latitude_deg = double(latitude_deg_x1e7) / kDegreesX1e7PerDegree;
-  const double longitude_deg = double(longitude_deg_x1e7) / kDegreesX1e7PerDegree;
-  return coords_ok(latitude_deg, longitude_deg) && !(latitude_deg == 0.0 && longitude_deg == 0.0);
-}
-
-void append_point_json(std::string* out, const bgm1::CurvePoint& p) {
-  char point[128];
-  const double latitude_deg = double(p.latitude_deg_x1e7) / kDegreesX1e7PerDegree;
-  const double longitude_deg = double(p.longitude_deg_x1e7) / kDegreesX1e7PerDegree;
-  const double velocity_m_per_s = double(p.target_speed_kph) * kKphToMPerS;
-  std::snprintf(point, sizeof point,
-                "{\"latitude\":%.7f,\"longitude\":%.7f,\"distance_m\":%u,\"velocity\":%.3f}", latitude_deg,
-                longitude_deg, unsigned(p.distance_along_route_m), velocity_m_per_s);
-  *out += point;
-}
-
 }  // namespace
 
 NavStateSnapshot nav_state_snapshot_from_reply(const bgm1::Reply& reply) {
@@ -97,19 +79,26 @@ NavStateSnapshot nav_state_snapshot_from_reply(const bgm1::Reply& reply) {
   s.road_attributes.age_ms = r.age_ms;
 
   const bgm1::CurveAhead& c = ext.curve_ahead;
-  s.curve_ahead.point_count = c.point_count;
-  s.curve_ahead.max_lateral_acceleration_m_per_s2 =
-      float(c.max_lateral_acceleration_dm_per_s2) * kDmPerS2ToMPerS2;
-  s.curve_ahead.horizon_distance_m = c.horizon_distance_m;
+  const uint8_t count = c.sample_count > bgm1::kCurveMaxSamples ? uint8_t(bgm1::kCurveMaxSamples) : c.sample_count;
+  s.curve_ahead.sample_count = count;
+  s.curve_ahead.spacing_m = c.spacing_m;
+  s.curve_ahead.first_offset_m =
+      c.first_offset_dm == bgm1::kCurveInvalidOffsetDm ? NAN : float(c.first_offset_dm) * kDmToM;
+  if (count > 0 && c.spacing_m > 0 && c.first_offset_dm != bgm1::kCurveInvalidOffsetDm) {
+    const double end_m = double(c.first_offset_dm) * 0.1 + double(count - 1) * double(c.spacing_m);
+    const long clamped = std::clamp(std::lround(std::max(0.0, end_m)), 0L, 65534L);
+    s.curve_ahead.horizon_distance_m = uint16_t(clamped);
+  } else {
+    s.curve_ahead.horizon_distance_m = 0;
+  }
   s.curve_ahead.age_ms = c.age_ms;
   s.curve_ahead.along_route = c.curve_flags & 0x01;
   s.curve_ahead.road_lookahead = c.curve_flags & 0x02;
   s.curve_ahead.smoothed = c.curve_flags & 0x04;
-  for (int i = 0; i < c.point_count && i < int(bgm1::kCurveMaxPoints); i++) {
-    // 只读距离 / 目标速度 / 曲率：点经纬度不进快照（决策 17）
-    s.curve_ahead.points[i].distance_along_route_m = c.points[i].distance_along_route_m;
-    s.curve_ahead.points[i].target_speed_kph = c.points[i].target_speed_kph;
-    s.curve_ahead.points[i].curvature_per_m = float(c.points[i].curvature_per_m_x1e4) * kCurvatureX1e4ToPerM;
+  for (int i = 0; i < count; i++) {
+    s.curve_ahead.curvatures_per_m[i] = c.curvature_per_m_x1e5[i] == bgm1::kCurveInvalidCurvature
+                                            ? NAN
+                                            : float(c.curvature_per_m_x1e5[i]) * kCurvatureX1e5ToPerM;
   }
 
   const bgm1::NavDebug& d = ext.nav_debug;
@@ -138,75 +127,69 @@ void NavLinkCache::reset() {
   nav_state_age_ms_ = bgm1::kNavU16Invalid;
 }
 
-bool MapTargetWriter::point_usable(const bgm1::CurvePoint& p) {
-  if (p.target_speed_kph == 0 || p.distance_along_route_m > 600) return false;  // 线上「无」：不能当 0 m/s 喂纵向
-  return point_coords_ok(p.latitude_deg_x1e7, p.longitude_deg_x1e7);
-}
-
-int MapTargetWriter::usable_point_count(const MapTargetInput& in) {
-  int n = 0;
-  uint16_t previous_distance = 0;
-  for (int i = 0; i < in.curve.point_count && i < int(bgm1::kCurveMaxPoints); i++) {
-    if (!point_usable(in.curve.points[i])) continue;
-    if (n > 0 && in.curve.points[i].distance_along_route_m < previous_distance) return 0;
-    previous_distance = in.curve.points[i].distance_along_route_m;
-    n++;
+bool MapTargetWriter::profile_usable(const bgm1::CurveAhead& c) {
+  if (c.sample_count == 0 || c.sample_count > bgm1::kCurveMaxSamples) return false;
+  if (c.spacing_m < 1 || c.spacing_m > 50) return false;
+  if (c.first_offset_dm == bgm1::kCurveInvalidOffsetDm ||
+      c.first_offset_dm < -1000 || c.first_offset_dm > 1000) {
+    return false;
   }
-  return n;
+  bool has_forward_sample = false;
+  for (int i = 0; i < c.sample_count; i++) {
+    if (c.curvature_per_m_x1e5[i] == bgm1::kCurveInvalidCurvature) return false;
+    if (int32_t(c.first_offset_dm) + int32_t(i) * int32_t(c.spacing_m) * 10 >= 0) {
+      has_forward_sample = true;
+    }
+  }
+  return has_forward_sample;
 }
 
 bool MapTargetWriter::urgent_change(const MapTargetInput& in, int n) const {
-  (void)n;  // 新集合大小由循环内重算，保持 8×8、无分配
-  int new_idx[bgm1::kCurveMaxPoints];
-  int m = 0;
-  for (int i = 0; i < in.curve.point_count && i < int(bgm1::kCurveMaxPoints); i++) {
-    if (point_usable(in.curve.points[i])) new_idx[m++] = i;
-  }
+  if (n == 0) return last_sample_count_ > 0;
+  if (last_sample_count_ == 0) return true;
+  if (in.curve.spacing_m != last_spacing_m_) return true;
 
-  // R5：一对一匹配，每个新点最多匹配一个旧点，避免两个旧点抢同一个新点掩盖删点
-  bool used[bgm1::kCurveMaxPoints] = {};
-  for (int k = 0; k < last_point_count_; k++) {
-    const WrittenPoint& old = last_points_[k];
-    int best = -1;
-    int64_t best_dist2 = 0;
-    for (int j = 0; j < m; j++) {
-      if (used[j]) continue;
-      const bgm1::CurvePoint& p = in.curve.points[new_idx[j]];
-      // R2：先转 int64 再相减，跨 ±180° 不会 int32 溢出
-      const int64_t dlat = int64_t(p.latitude_deg_x1e7) - int64_t(old.latitude_deg_x1e7);
-      const int64_t dlon = int64_t(p.longitude_deg_x1e7) - int64_t(old.longitude_deg_x1e7);
-      if (std::abs(dlat) > kSamePointToleranceX1e7 || std::abs(dlon) > kSamePointToleranceX1e7) {
-        continue;
-      }
-      const int64_t dist2 = dlat * dlat + dlon * dlon;
-      // R4：容差内取最近的旧点，而不是第一个命中的
-      if (best < 0 || dist2 < best_dist2) {
-        best = j;
-        best_dist2 = dist2;
+  auto max_abs_profile = [](int count, const int16_t* k_x1e5) -> int {
+    int m = 0;
+    for (int i = 0; i < count; i++) {
+      m = std::max(m, std::abs(int(k_x1e5[i])));
+    }
+    return m;
+  };
+  auto max_abs_near = [](int count, uint8_t spacing_m, int16_t first_offset_dm,
+                         const int16_t* k_x1e5) -> int {
+    int m = 0;
+    for (int i = 0; i < count; i++) {
+      const int32_t d_dm = int32_t(first_offset_dm) + int32_t(i) * int32_t(spacing_m) * 10;
+      if (d_dm >= 0 && d_dm <= 1500) {
+        m = std::max(m, std::abs(int(k_x1e5[i])));
       }
     }
-    if (best < 0) return true;  // N1 旧点被删除（即使总点数不变）
-    used[best] = true;
-    // N2：容差内同一点的目标速度下调 → 立即写
-    if (in.curve.points[new_idx[best]].target_speed_kph < old.target_speed_kph) return true;
-  }
+    return m;
+  };
+
+  const int new_max_abs = max_abs_profile(n, in.curve.curvature_per_m_x1e5);
+  const int old_max_abs = max_abs_profile(last_sample_count_, last_curvatures_x1e5_);
+  if (new_max_abs >= old_max_abs + 5) return true;
+
+  const int new_near_max_abs =
+      max_abs_near(n, in.curve.spacing_m, in.curve.first_offset_dm, in.curve.curvature_per_m_x1e5);
+  const int old_near_max_abs =
+      max_abs_near(last_sample_count_, last_spacing_m_, last_first_offset_dm_, last_curvatures_x1e5_);
+  if (old_near_max_abs >= new_near_max_abs + 10) return true;
+
+  if (old_max_abs > 0 && new_max_abs == 0) return true;
   return false;
 }
 
-bool MapTargetWriter::same_points(const MapTargetInput& in, int n) const {
-  if (n != last_point_count_) return false;
+bool MapTargetWriter::same_profile(const MapTargetInput& in, int n) const {
+  if (n != last_sample_count_) return false;
   if (n == 0) return true;
-  int k = 0;
-  for (int i = 0; i < in.curve.point_count && i < int(bgm1::kCurveMaxPoints); i++) {
-    const bgm1::CurvePoint& p = in.curve.points[i];
-    if (!point_usable(p)) continue;
-    const WrittenPoint& w = last_points_[k++];
-    if (p.latitude_deg_x1e7 != w.latitude_deg_x1e7 ||
-        p.longitude_deg_x1e7 != w.longitude_deg_x1e7 ||
-        p.target_speed_kph != w.target_speed_kph ||
-        p.distance_along_route_m != w.distance_along_route_m) {
-      return false;
-    }
+  if (in.curve.spacing_m != last_spacing_m_ || in.curve.first_offset_dm != last_first_offset_dm_) {
+    return false;
+  }
+  for (int i = 0; i < n; i++) {
+    if (in.curve.curvature_per_m_x1e5[i] != last_curvatures_x1e5_[i]) return false;
   }
   return true;
 }
@@ -229,15 +212,14 @@ std::optional<std::string> MapTargetWriter::update(const MapTargetInput& in) {
   const bool route_usable = !rerouting && (!along_route || route_ok);
   const bool curve_valid = in.link_connected && in.curve_present && in.nav_state_present && phone_ok &&
                            curve_sample_ns != 0 && phone_sample_ns != 0 && route_usable &&
-                           in.curve.point_count <= bgm1::kCurveMaxPoints;
+                           profile_usable(in.curve);
 
-  const int n = curve_valid ? usable_point_count(in) : 0;
-  const bool same = wrote_ && same_points(in, n);
+  const int n = curve_valid ? int(in.curve.sample_count) : 0;
+  const bool same = wrote_ && same_profile(in, n);
   const uint64_t since_last_write = in.now_ns > last_write_ns_ ? in.now_ns - last_write_ns_ : 0;
   if (same && since_last_write < kRefreshIntervalNs) return std::nullopt;
 
-  // N1/N2：旧点被删除（含清空）或容差内同一点降速 = 下一拍写（≤1 个 calib 拍）；其余变化仍 ≤2 Hz
-  const bool urgent = wrote_ && (n == 0 ? last_point_count_ > 0 : urgent_change(in, n));
+  const bool urgent = wrote_ && urgent_change(in, n);
   if (!same && !urgent && wrote_ && since_last_write < kMinChangedIntervalNs) {
     return std::nullopt;
   }
@@ -245,31 +227,33 @@ std::optional<std::string> MapTargetWriter::update(const MapTargetInput& in) {
   std::string json = "[]";
   if (n > 0) {
     const uint64_t valid_until_ns = std::min(curve_sample_ns, phone_sample_ns) + kNavDataMaxAgeNs;
-    json = "{\"sample_time_ns\":" + std::to_string(curve_sample_ns) +
-           ",\"valid_until_ns\":" + std::to_string(valid_until_ns) + ",\"points\":[";
-    bool first = true;
-    for (int i = 0; i < in.curve.point_count; i++) {
-      if (!point_usable(in.curve.points[i])) continue;
-      if (!first) json += ',';
-      first = false;
-      append_point_json(&json, in.curve.points[i]);
+    json.clear();
+    json.reserve(128 + size_t(n) * 10);
+    char hdr[160];
+    std::snprintf(hdr, sizeof hdr,
+                  "{\"sample_time_ns\":%llu,\"valid_until_ns\":%llu,\"spacing_m\":%u,\"first_offset_m\":%.1f,\"curvatures\":[",
+                  (unsigned long long)curve_sample_ns, (unsigned long long)valid_until_ns,
+                  unsigned(in.curve.spacing_m), double(in.curve.first_offset_dm) * 0.1);
+    json += hdr;
+    for (int i = 0; i < n; i++) {
+      if (i > 0) json += ',';
+      append_curvature_json(&json, in.curve.curvature_per_m_x1e5[i]);
     }
     json += "]}";
   }
 
   wrote_ = true;
   last_write_ns_ = in.now_ns;
-  last_point_count_ = 0;
+  last_sample_count_ = n;
   if (n > 0) {
-    for (int i = 0; i < in.curve.point_count && i < int(bgm1::kCurveMaxPoints); i++) {
-      const bgm1::CurvePoint& p = in.curve.points[i];
-      if (!point_usable(p)) continue;
-      WrittenPoint& w = last_points_[last_point_count_++];
-      w.latitude_deg_x1e7 = p.latitude_deg_x1e7;
-      w.longitude_deg_x1e7 = p.longitude_deg_x1e7;
-      w.target_speed_kph = p.target_speed_kph;
-      w.distance_along_route_m = p.distance_along_route_m;
+    last_spacing_m_ = in.curve.spacing_m;
+    last_first_offset_dm_ = in.curve.first_offset_dm;
+    for (int i = 0; i < n; i++) {
+      last_curvatures_x1e5_[i] = in.curve.curvature_per_m_x1e5[i];
     }
+  } else {
+    last_spacing_m_ = 0;
+    last_first_offset_dm_ = 0;
   }
   return json;
 }

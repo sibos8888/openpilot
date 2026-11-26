@@ -1,5 +1,5 @@
-// BGM1 v4，全部小端；与车机 frame_codec.h/.cpp 保持逐字节相同。
-// v3 不兼容：先验证前 16 B 的版本，再解释 payload。
+// BGM1 v5，全部小端；与车机 frame_codec.h/.cpp 保持逐字节相同。
+// v4 不兼容：先验证前 16 B 的版本，再解释 payload。
 // FRAME: MsgHdr@0/16, t_eof@16/8, desire@24/32, traffic@56/8, action_t@64/8,
 // warp_road@72/36, warp_wide@108/36, Vehicle@144/8, road@152。
 // Vehicle: speed_cm_per_s u16@144, yaw i16@146 (INT16_MIN invalid), flags u8@148,
@@ -9,16 +9,16 @@
 // NAV_STATE.age_ms: phone_location_ok 时为手机采样年龄，正年龄向上取整到 ms；
 // 不可用时为状态发布年龄。CURVE.age_ms 仍是计算结果年龄，各自判期。
 // ===== REPLY（type 0x11）=====
-//     0   16  MsgHdr：magic "BGM1"、ver=4、type=0x11、flags（bit0=SEQ_RESET、bit1=ZERO_PAIR）、
-//                frame_idx u32（回显）、len u32 = 8440（payload 字节数，不含 t_eof）
+//     0   16  MsgHdr：magic "BGM1"、ver=5、type=0x11、flags（bit0=SEQ_RESET、bit1=ZERO_PAIR）、
+//                frame_idx u32（回显）、len u32 = 8584（payload 字节数，不含 t_eof）
 //    16    8  t_eof u64（回显）
 //    24 8264  outputs[0:2066) f32
 //  8288   16  遥测 u32×4：srv_recv_us、srv_prep_us、srv_htp_us、srv_total_us
-//  8304  160  NavExt（定长导航扩展区，每条 REPLY 全带）
-//  8464   16  尾部保留 16 B（恒填零，不校验）
-//   线长 = 24 + 8440 + 16 = 8480。
+//  8304  304  NavExt（定长导航扩展区，每条 REPLY 全带）
+//  8608   16  尾部保留 16 B（恒填零，不校验）
+//   线长 = 24 + 8584 + 16 = 8624。
 //
-//   NavExt 160 B（偏移相对 REPLY 起点）：
+//   NavExt 304 B（偏移相对 REPLY 起点）：
 //     8304   4  健康头：present_flags u8 · nav_health_flags u8 · 保留 u16
 //                present_flags：bit0 NAV_STATE · bit1 ROAD_ATTR · bit2 CURVE_AHEAD · bit3 NAV_DEBUG
 //                各「有提供者」；位为 0 ⇒ 该子结构全 0，C4 当「无此功能」（pack 强制写 0，
@@ -26,9 +26,9 @@
 //                bit3 rerouting（手机 :nav 按判据算，C4 只读位）
 //     8308  24  NAV_STATE
 //     8332  16  ROAD_ATTR
-//     8348 104  CURVE_AHEAD（头 8 B + 8 个采样点 × 12 B）
-//     8452   8  NAV_DEBUG
-//     8460   4  保留（pack 置 0，解析端忽略）
+//     8348 248  CURVE_AHEAD（头 8 B + 120 个等距曲率采样 × 2 B）
+//     8596   8  NAV_DEBUG
+//     8604   4  保留（pack 置 0，解析端忽略）
 //   present_flags / nav_health_flags 高 4 位、nav_input_flags bit4–7、road_edge_flags bit6、curve_flags bit3–7 等规格保留位 pack 强制写 0。
 //   age_ms u16：到本帧收齐的年龄，正年龄向上取整到 ms，饱和 0xFFFE，0xFFFF 未知。
 //   phone_location_ok=1 时 NAV_STATE.age_ms 来自手机采样，motion tick 不续期；不可用时
@@ -61,19 +61,18 @@
 //     +10  u16  保留（原坡度位，坡度不进协议）
 //     +12  u16  match_distance_dm            匹配点到 GNSS 点距离 0.1 m；0xFFFF 未匹配
 //     +14  u16  保留
-//   CURVE_AHEAD（8348，104 B）：
-//     +0  u8   point_count      有效采样点数 0–8。pack 把 >8 钳到 8；parse 把线上 >8 当坏块：
+//   CURVE_AHEAD（8348，248 B）：
+//     +0  u8   sample_count     有效采样点数 0–120。pack 把 >120 钳到 120；parse 把线上 >120 当坏块：
 //                               清 present_flags bit2，子块整块读作缺省 0（与 present_flags=0 同：其余字段无意义），
-//                               因为这些点要喂纵向
-//     +1  u8   max_lateral_acceleration_dm_per_s2  手机算目标速度用的横向加速度上限 0.1 m/s²（已定 20）；C4 不复算
-//     +2  u16  horizon_distance_m        采样覆盖的前方距离 m（已定 600）
-//     +4  u16  age_ms
-//     +6  u8   curve_flags      bit0 沿路线取 · bit1 沿当前道路前扫 · bit2 曲率已平滑
+//                               因为这些曲率要喂纵向
+//     +1  u8   spacing_m        采样间距 m（典型 10；0 无效）
+//     +2  i16  first_offset_dm  当前车位到 sample[0] 的有符号沿路线/道路距离 0.1 m（如 -200 = -20.0 m；INT16_MIN 无效）
+//     +4  u16  age_ms           0xFFFE 饱和；0xFFFF 无效
+//     +6  u8   curve_flags      bit0 沿路线取 · bit1 沿当前道路前扫 · bit2 曲率已平滑（0 = 原始曲率）
 //     +7  u8   保留
-//     +8  8 × 点（每点 12 B；point_count 之外的点 pack 为 0）：
-//           +0 i32 latitude_deg_x1e7 · +4 i32 longitude_deg_x1e7 · +8 u16 distance_along_route_m（0xFFFF 无效）·
-//           +10 u8 target_speed_kph（= min(254, 3.6·√(max_lateral_acceleration/κ))，0 无）· +11 u8 curvature_per_m_x1e4（值 = κ(1/m) × 1e4，0 直线）
-//   NAV_DEBUG（8452，8 B）：
+//     +8  240  int16_t curvature_per_m_x1e5[120]（有符号 κ×1e5 [1/m]，左转+ / 右转- / 直0，-32768 无效；
+//                               sample_count 之外的采样读写为 0）
+//   NAV_DEBUG（8596，8 B）：
 //     +0 u16 render_duration_us（饱和 65534，0xFFFF 无效）· +2 u16 map_match_duration_us（0xFFFF 无效）· +4 u16 route_compute_duration_ms（0xFFFF 无效）·
 //     +6 u8 nav_cpu_usage_percent（饱和 254，255 无效）· +7 u8 保留
 //
@@ -95,7 +94,7 @@
 namespace bgm1 {
 
 constexpr uint32_t kMagic = 0x314D4742u;  // "BGM1" 小端
-constexpr uint8_t kVersion = 4;  // motion-only FRAME
+constexpr uint8_t kVersion = 5;  // v5: motion-only FRAME + raw curvature profile REPLY
 constexpr uint8_t kTypeFrame = 0x10;
 constexpr uint8_t kTypeReply = 0x11;
 constexpr uint8_t kTypeErr = 0x7F;
@@ -209,16 +208,16 @@ constexpr size_t kReplyHdrSize = 24;  // MsgHdr 16 + t_eof 回显 8
 constexpr size_t kReplyOutputsCount = 2066;
 constexpr size_t kReplyOutputsSize = kReplyOutputsCount * 4;
 constexpr size_t kReplyTelemetryCount = 4;  // recv/prep/htp/total us
-constexpr size_t kReplyNavExtSize = 160;
+constexpr size_t kReplyNavExtSize = 304;
 constexpr size_t kReplyPayloadSize =
-    kReplyOutputsSize + kReplyTelemetryCount * 4 + kReplyNavExtSize;              // 8440
-constexpr size_t kReplyWireSize = kReplyHdrSize + kReplyPayloadSize + kTailReservedSize;  // 8480
+    kReplyOutputsSize + kReplyTelemetryCount * 4 + kReplyNavExtSize;              // 8584
+constexpr size_t kReplyWireSize = kReplyHdrSize + kReplyPayloadSize + kTailReservedSize;  // 8624
 
 // NavExt 在 REPLY 里的起始偏移（头部 ‖ outputs ‖ 遥测之后）
 constexpr size_t kNavExtOffset = kReplyHdrSize + kReplyOutputsSize + kReplyTelemetryCount * 4;
 static_assert(kNavExtOffset == 8304, "NavExt 从 REPLY 偏移 8304 起");
 
-// ---- NavExt（REPLY 偏移 8304，160 B）：全部子结构缺省为 0，缺省 Reply = 「无导航数据」----
+// ---- NavExt（REPLY 偏移 8304，304 B）：全部子结构缺省为 0，缺省 Reply = 「无导航数据」----
 
 constexpr uint8_t kNavPresentNavState = 1u << 0;
 constexpr uint8_t kNavPresentRoadAttr = 1u << 1;
@@ -235,7 +234,9 @@ constexpr uint32_t kNavU32Invalid = 0xFFFFFFFFu;
 constexpr uint16_t kNavU16Invalid = 0xFFFF;
 constexpr uint8_t kNavU8Invalid = 255;
 
-constexpr size_t kCurveMaxPoints = 8;
+constexpr size_t kCurveMaxSamples = 120;
+constexpr int16_t kCurveInvalidCurvature = -32768;  // INT16_MIN
+constexpr int16_t kCurveInvalidOffsetDm = -32768;   // INT16_MIN
 
 struct NavState {  // 线上 24 B
   uint8_t nav_status = 0;
@@ -263,21 +264,13 @@ struct RoadAttr {  // 线上 16 B
   uint16_t match_distance_dm = 0;
 };
 
-struct CurvePoint {  // 线上 12 B
-  int32_t latitude_deg_x1e7 = 0;
-  int32_t longitude_deg_x1e7 = 0;
-  uint16_t distance_along_route_m = 0;
-  uint8_t target_speed_kph = 0;
-  uint8_t curvature_per_m_x1e4 = 0;  // 值 = κ(1/m) × 1e4
-};
-
-struct CurveAhead {  // 线上 104 B；pack 把 point_count 钳到 8，线上 point_count>8 ⇒ parse 清 present_flags bit2；point_count 之外的点读写为 0
-  uint8_t point_count = 0;
-  uint8_t max_lateral_acceleration_dm_per_s2 = 0;
-  uint16_t horizon_distance_m = 0;
+struct CurveAhead {  // 线上 248 B；pack 把 sample_count 钳到 120，线上 sample_count>120 ⇒ parse 清 present_flags bit2；sample_count 之外的采样读写为 0
+  uint8_t sample_count = 0;
+  uint8_t spacing_m = 0;
+  int16_t first_offset_dm = 0;
   uint16_t age_ms = 0;
   uint8_t curve_flags = 0;
-  CurvePoint points[kCurveMaxPoints] = {};
+  int16_t curvature_per_m_x1e5[kCurveMaxSamples] = {};
 };
 
 struct NavDebug {  // 线上 8 B
@@ -310,7 +303,7 @@ struct Reply {
   bool zero_pair() const { return flags & kFlagZeroPair; }
 };
 
-// 组完整 REPLY：头 24 B ‖ outputs ‖ 遥测 ‖ NavExt 160 B ‖ 尾部保留 16 B（零）。返回写入字节数，cap 不足返回 0。
+// 组完整 REPLY：头 24 B ‖ outputs ‖ 遥测 ‖ NavExt 304 B ‖ 尾部保留 16 B（零）。返回写入字节数，cap 不足返回 0。
 size_t pack_reply(const Reply& r, uint8_t* out, size_t cap);
 
 // 解析完整 REPLY：先验 MsgHdr（magic/ver/type，版本先于长度），再验 len 与线长。

@@ -5,7 +5,7 @@ VisionIPC 取 road（`VISION_STREAM_NARROW_ROAD`）/wide（`VISION_STREAM_WIDE_R
 在取帧线程按标定矩阵 warp 成模型视图 512×256 NV12（App 只做 pack），
 用 `logger_lib` 的 `V4LEncoder` 双路硬编（HEVC Main、VBR、无 B 帧、GOP 20、venus realtime 优先级、
 默认每路 2 Mb/s 可调），按 10 号布局组 FRAME 经 TCP 发出（road 出包即发）。不落盘、不进 loggerd（编码输出
-只进发送器，不发布编码数据服务）。`frame_codec.{h,cpp}` 与 chipmunk App 的 `frame_codec.h` 为同一线协议（BGM1 v4，见下「线协议 v4」）的两份镜像，须逐字节同源，改一边须同步另一边。
+只进发送器，不发布编码数据服务）。`frame_codec.{h,cpp}` 与 chipmunk App 的 `frame_codec.h` 为同一线协议（BGM1 v5，见下「线协议 v5」）的两份镜像，须逐字节同源，改一边须同步另一边。
 
 ## 模块
 
@@ -23,7 +23,7 @@ VisionIPC 取 road（`VISION_STREAM_NARROW_ROAD`）/wide（`VISION_STREAM_WIDE_R
 | `gen_warp_golden.py` | 矩阵 golden 表生成（宿主测试对照 Python ≤1e-5） |
 | `make_warp_golden.py` · `fixtures/` | warp 对 tinygrad `make_frame_prepare` 的 golden 生成与数据（`test_warp_golden.cc` 对照） |
 | `server_locator.{h,cpp}` | 服务端定位（06 号）：手动 IP / 限 wlan0 子网的 mDNS 发现（avahi-browse） |
-| `msg_framer.h` | 下行定长消息分帧（HELLO 48 / REPLY 8480 / ERR 40 B，REPLY 被 TCP 拆包时按累计长度拼齐） |
+| `msg_framer.h` | 下行定长消息分帧（HELLO 48 / REPLY 8624 / ERR 40 B，REPLY 被 TCP 拆包时按累计长度拼齐） |
 | `nav_outputs.{h,cpp}` | NavExt 的车机侧输出（纯逻辑）：REPLY → `navStateSP` 快照（弯道不含经纬度）；CURVE + GNSS → `/dev/shm/params`（`MapTargetWriter`，≤2 Hz、安全清空） |
 | `test_bigmodeld.cc` | 宿主单测（无设备依赖，Mac/Linux 直接编译） |
 
@@ -117,21 +117,20 @@ VisionIPC 取 road（`VISION_STREAM_NARROW_ROAD`）/wide（`VISION_STREAM_WIDE_R
 主编译入口为 `modeld/compile_modeld.py`。旧 `tg_compile` 和 DM `tg_devices` 生成路径已移除。
 
 
-## 线协议 v4（BGM1，`kVersion = 4`）
+## 线协议 v5（BGM1，`kVersion = 5`）
 
-两端锁步升级，不兼容 v3。所有消息先从前 16 B 验证版本，再解释 payload。
-手机拒绝旧 FRAME 并返回 `ERR VERSION_MISMATCH`，`detail=(peer<<8)|4`；
+两端锁步升级，不兼容 v4。所有消息先从前 16 B 验证版本，再解释 payload。
+手机拒绝旧 FRAME 并返回 `ERR VERSION_MISMATCH`，`detail=(peer<<8)|5`；
 车机 `MsgFramer` 收到旧 HELLO/REPLY/ERR 头即拒绝并断开，清空导航缓存和弯道目标。
 `BigmodelLinkState=version_mismatch` 保持到正确 HELLO，后续 connecting/stall/lost 不覆盖。
 权威逐字段布局在两仓相同的 `frame_codec.h/.cpp`。
 
-| 消息 | v4 大小与字段 |
+| 消息 | v5 大小与字段 |
 |---|---|
 | FRAME | 固定头 **152 B**；线长 **172 + road_len + wide_len** |
 | VEHICLE | speed u16@144、yaw i16@146、flags u8@148、reserved 3 B@149 |
-| REPLY | **8480 B**，len=8440；NavExt 仍 @8304 / 160 B |
-| HELLO / ERR | 48 / 40 B，ver=4 |
-
+| REPLY | **8624 B**，len=8584；NavExt @8304 / **304 B**（CURVE_AHEAD 248 B，含 120 个等距曲率采样） |
+| HELLO / ERR | 48 / 40 B，ver=5 |
 FRAME 不含车机 GNSS 的坐标、航向、误差、fix age 或有效位；bigmodeld 不订阅
 `gpsLocationExternal`，不生产或读取 `LastGPSPosition`。其它 openpilot 功能的 GNSS 不在此链路。
 车辆速度/yaw 仍来自 `deviceMotion`，按 `rot_from_euler(rpyCalib)^T` 转入车体系：
@@ -152,24 +151,24 @@ bit1 route_ok、bit2 nav_ok、bit3 rerouting 不变。`NAV_STATE.age_ms` 在手�
 `MapTargetVelocities=[]` 清空；非空使用以下 object，旧非空列表一律拒绝：
 
 ```json
-{"sample_time_ns":9850000000,"valid_until_ns":10450000000,"points":[{"latitude":37.422,"longitude":-122.084,"distance_m":120,"velocity":11.111}]}
+{"sample_time_ns":9850000000,"valid_until_ns":11750000000,"spacing_m":10,"first_offset_m":-18.5,"curvatures":[0,0,0.01250,0.01250,0.01250,-0.01000,-0.01000,-0.01000,0,0]}
 ```
 
 时间为 **C4 本机 BOOTTIME 的保守推定值**：`sample=t_eof-CURVE.age_ms`，
 `valid_until=min(sample+2s,t_eof-NAV_STATE.age_ms+2s)`。t_eof 早于手机收齐本帧，
 允许提前过期，禁止以 REPLY 到达时刻续命。两种 age 分别检查未知、下溢、未来和期限。
 NAV_STATE/CURVE 必须 present、phone_location_ok，沿路线点还需 route_ok 且非 rerouting。
-点中的坐标来自离线目标几何，只作同目标保持/删除/降速比较，不计算车机到目标的地理距离。
+手机只输出等距原始有符号曲率剖面（`spacing_m`、`first_offset_m`、`curvatures`），完全解耦舒适度/减速策略。
 
-新增/提速/距离变化最多 2 Hz，不变 1 Hz 刷新；失效、删点、降速下一拍写。
-reply 线程只交付待写值，非实时 calib 线程执行 Params I/O。消费者验证最多 8 个点、
-0..600 m 单调距离、有限正速度和合法目标坐标，坏数据清目标并限流记录原因。
+spacing 变化、最大曲率增大 ≥5e-5 /m、近场 [0, 150 m] 最大曲率下降 ≥1e-4 /m、归零或清空下一拍立即写；
+其余变化最多 2 Hz，不变 1 Hz 刷新。reply 线程只交付待写值，非实时 calib 线程执行 Params I/O。
+消费者在 C4 侧先对有符号曲率做 5 点中值平滑，再按 `SccMapTargetLatAccel`（默认 1.7 m/s²）直接计算目标速度
+`sqrt(target_lat_accel / |k|)`，坏数据（含旧 v4 `points` 格式）清目标并限流记录原因。
 消费者先按当前车速扣除 sample→receive 的短延迟，再在现有控制节拍累计前进距离；
-`distance=max(0,snapshot.distance_m-travelled)`。重复快照不重置累计、不能延长期限，
+`d_i = first_offset_m + i * spacing_m - travelled_m`。重复快照不重置累计、不能延长期限，
 旧快照、倒车、carState 无效、非有限/负速度、时间倒退和超期立即清目标。
 C4 显式用 `CLOCK_BOOTTIME`，Darwin 宿主测试使用注入时钟。
-保留既有 TARGET_JERK/ACCEL/OFFSET、override 状态机和同坐标目标保持。
-
+保留既有 TARGET_JERK/ACCEL/OFFSET、override 状态机和基于距离跟踪的粘滞目标保持。
 连接代次变化、断连、ERR 和错版均清摘要与目标；启动/退出写 []，manager 保留
 上下路及 writer-gone 清理。`LastGPSPosition` 不再属于此模块的清理键。
 导航卡 positionLost 显示 `Phone location unavailable`，手机健康位失效隐藏旧转向/ETA。
@@ -225,10 +224,10 @@ MetaCache（查不到不弹队、clean2 回归、miss 分类）、序列头门�
 100 ms/yaw_valid/speed_valid 边界、deviceMotion 车体系换算与 Python 对照、yaw 右转符号、20 Hz 采样相位
 （含丢帧/迟到 60 ms）、量程饱和、fill 零堆分配）、frame_codec
 往返与坏输入（含 HELLO）、LinkStateTracker（instance 对比判 blip/restart）、
-下行分帧（8480 B REPLY 分两次到达、切点在 NavExt 中间；旧版本在 16 B 头处拒绝）、
-navStateSP 快照（present→has*、单位换算、无效→NaN、弯道经纬度不影响输出）、
-MapTargetWriter（8 点 JSON、空列表、失效/删点/降速在下一 calib 拍清空、手机失效/独立年龄过期清空、
-距离 envelope、1 Hz 刷新 / 2 Hz 上限、目标 ≤2 Hz 的 20 Hz×10 s 节拍、20 Hz 调用耗时）、
+下行分帧（8624 B REPLY 分两次到达、切点在 NavExt 中间；旧版本在 16 B 头处拒绝）、
+navStateSP 快照（present→has*、单位换算、无效→NaN、派生 horizonDistanceM）、
+MapTargetWriter（曲率剖面 JSON、空列表、失效/曲率增大/近场回直立即写、手机失效/独立年龄过期清空、
+距离 envelope、1 Hz 刷新 / 2 Hz 上限、20 Hz 调用耗时）、
 NavLinkCache 断连复位、退出清理 ops、avahi 行解析/子网范围/发现节流（06 号）。
 golden 表生成（输出粘进 test_bigmodeld.cc）：
 

@@ -1,6 +1,6 @@
 #pragma once
 
-// 下行（手机 → 车机）定长消息分帧：HELLO 48 / REPLY 8480 / ERR 40 B。
+// 下行（手机 → 车机）定长消息分帧：HELLO 48 / REPLY 8624 / ERR 40 B。
 // 只做字节拼接 + 按 MsgHdr.type/len 定整条长度；REPLY 被 TCP 拆成多次 read_some（切点可能在
 // NavExt 中间）时按累计字节数等齐，凑满才交出整条。纯逻辑、无 socket 依赖，宿主单测直接编译。
 //

@@ -23,12 +23,10 @@ inline uint16_t get_u16(const uint8_t* p) {
   return uint16_t(p[0]) | (uint16_t(p[1]) << 8);
 }
 inline void put_i16(uint8_t* p, int16_t v) { put_u16(p, uint16_t(v)); }
-inline void put_i32(uint8_t* p, int32_t v) { put_u32(p, uint32_t(v)); }
 inline uint32_t get_u32(const uint8_t* p) {
   return read_u32_le(p);  // 实现收在 frame_codec.h（bgm1_server 等 streaming 消费方共用）
 }
 inline int16_t get_i16(const uint8_t* p) { return int16_t(get_u16(p)); }
-inline int32_t get_i32(const uint8_t* p) { return int32_t(get_u32(p)); }
 inline uint64_t get_u64(const uint8_t* p) {
   return uint64_t(get_u32(p)) | (uint64_t(get_u32(p + 4)) << 32);
 }
@@ -179,10 +177,10 @@ Err parse_frame(const uint8_t* data, size_t size, FrameView* out,
 namespace {
 
 // NavExt 子结构偏移（相对 NavExt 起点 kNavExtOffset = REPLY 偏移 8304）
-constexpr size_t kNavStateOffset = 4, kRoadAttrOffset = 28, kCurveAheadOffset = 44, kNavDebugOffset = 148;
-constexpr size_t kCurvePointsOffset = 8, kCurvePointSize = 12;
+constexpr size_t kNavStateOffset = 4, kRoadAttrOffset = 28, kCurveAheadOffset = 44, kNavDebugOffset = 292;
+constexpr size_t kCurveSamplesOffset = 8;
 
-size_t clamp_curve_count(uint8_t point_count) { return point_count > kCurveMaxPoints ? kCurveMaxPoints : point_count; }
+size_t clamp_curve_count(uint8_t sample_count) { return sample_count > kCurveMaxSamples ? kCurveMaxSamples : sample_count; }
 
 void pack_nav_ext(const NavExt& n, uint8_t* p) {  // p 已清零；present_flags 为 0 的子结构保持 0
   const uint8_t present_flags = n.present_flags & kNavPresentMask;  // 保留位不上线
@@ -219,19 +217,14 @@ void pack_nav_ext(const NavExt& n, uint8_t* p) {  // p 已清零；present_flags
   if (present_flags & kNavPresentCurveAhead) {
     uint8_t* q = p + kCurveAheadOffset;
     const CurveAhead& c = n.curve_ahead;
-    const size_t point_count = clamp_curve_count(c.point_count);
-    q[0] = uint8_t(point_count);
-    q[1] = c.max_lateral_acceleration_dm_per_s2;
-    put_u16(q + 2, c.horizon_distance_m);
+    const size_t sample_count = clamp_curve_count(c.sample_count);
+    q[0] = uint8_t(sample_count);
+    q[1] = c.spacing_m;
+    put_i16(q + 2, c.first_offset_dm);
     put_u16(q + 4, c.age_ms);
     q[6] = c.curve_flags & kCurveFlagsMask;
-    for (size_t i = 0; i < point_count; i++) {
-      uint8_t* pt = q + kCurvePointsOffset + kCurvePointSize * i;
-      put_i32(pt, c.points[i].latitude_deg_x1e7);
-      put_i32(pt + 4, c.points[i].longitude_deg_x1e7);
-      put_u16(pt + 8, c.points[i].distance_along_route_m);
-      pt[10] = c.points[i].target_speed_kph;
-      pt[11] = c.points[i].curvature_per_m_x1e4;
+    for (size_t i = 0; i < sample_count; i++) {
+      put_i16(q + kCurveSamplesOffset + 2 * i, c.curvature_per_m_x1e5[i]);
     }
   }
   if (present_flags & kNavPresentNavDebug) {
@@ -243,7 +236,7 @@ void pack_nav_ext(const NavExt& n, uint8_t* p) {  // p 已清零；present_flags
   }
 }
 
-// 原地填充 *out。*out 必须是刚构造的缺省值：present_flags 为 0 的子结构、坏块（CURVE point_count>8）靠「保持缺省」
+// 原地填充 *out。*out 必须是刚构造的缺省值：present_flags 为 0 的子结构、坏块（CURVE sample_count>120）靠「保持缺省」
 // 表达，这里不再逐字段清零（省拷贝）。以后若让 parse_reply 直接写调用方的 *out（不经局部 Reply），
 // 必须先把 *out 的 nav_ext 清零。
 void parse_nav_ext(const uint8_t* p, NavExt* out) {
@@ -278,24 +271,19 @@ void parse_nav_ext(const uint8_t* p, NavExt* out) {
     r.lane_count = q[9];
     r.match_distance_dm = get_u16(q + 12);
   }
-  // 线上 point_count>8 = 坏块（这些点要喂纵向）：清 present_flags bit2，子块整块按缺省（与 present_flags=0 统一：其余字段无意义）
-  if ((n.present_flags & kNavPresentCurveAhead) && p[kCurveAheadOffset] > kCurveMaxPoints) n.present_flags &= uint8_t(~kNavPresentCurveAhead);
+  // 线上 sample_count>120 = 坏块（这些曲率要喂纵向）：清 present_flags bit2，子块整块按缺省（与 present_flags=0 统一：其余字段无意义）
+  if ((n.present_flags & kNavPresentCurveAhead) && p[kCurveAheadOffset] > kCurveMaxSamples) n.present_flags &= uint8_t(~kNavPresentCurveAhead);
   if (n.present_flags & kNavPresentCurveAhead) {
     const uint8_t* q = p + kCurveAheadOffset;
     CurveAhead& c = n.curve_ahead;
-    const size_t point_count = clamp_curve_count(q[0]);  // 上面已拦 >8；循环上界再钳一次做双保险
-    c.point_count = uint8_t(point_count);
-    c.max_lateral_acceleration_dm_per_s2 = q[1];
-    c.horizon_distance_m = get_u16(q + 2);
+    const size_t sample_count = clamp_curve_count(q[0]);  // 上面已拦 >120；循环上界再钳一次做双保险
+    c.sample_count = uint8_t(sample_count);
+    c.spacing_m = q[1];
+    c.first_offset_dm = get_i16(q + 2);
     c.age_ms = get_u16(q + 4);
     c.curve_flags = q[6];
-    for (size_t i = 0; i < point_count; i++) {
-      const uint8_t* pt = q + kCurvePointsOffset + kCurvePointSize * i;
-      c.points[i].latitude_deg_x1e7 = get_i32(pt);
-      c.points[i].longitude_deg_x1e7 = get_i32(pt + 4);
-      c.points[i].distance_along_route_m = get_u16(pt + 8);
-      c.points[i].target_speed_kph = pt[10];
-      c.points[i].curvature_per_m_x1e4 = pt[11];
+    for (size_t i = 0; i < sample_count; i++) {
+      c.curvature_per_m_x1e5[i] = get_i16(q + kCurveSamplesOffset + 2 * i);
     }
   }
   if (n.present_flags & kNavPresentNavDebug) {

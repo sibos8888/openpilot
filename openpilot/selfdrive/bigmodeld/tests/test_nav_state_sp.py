@@ -18,14 +18,14 @@ def _field_names_recursive(schema):
 
 
 def test_nav_state_sp_has_no_coordinates_anywhere():
-  # C3：递归扫整个 NavStateSP（不是只看 CurveAhead / CurvePoint）
+  # C3：递归扫整个 NavStateSP（不是只看 CurveAhead）
   for name in _field_names_recursive(custom.NavStateSP.schema):
     assert "latitude" not in name.lower()
     assert "longitude" not in name.lower()
     assert "x1e7" not in name.lower()
-  point = set(custom.NavStateSP.CurveAhead.CurvePoint.schema.fields.keys())
-  assert point == {"distanceAlongRouteM", "targetSpeedKph", "curvaturePerM"}
-
+  curve_fields = set(custom.NavStateSP.CurveAhead.schema.fields.keys())
+  assert {"pointCount", "horizonDistanceM", "ageMs", "alongRoute", "roadLookahead", "smoothed",
+          "spacingM", "firstOffsetM", "curvaturesPerM"} <= curve_fields
 
 def test_nav_state_sp_rlog_roundtrip():
   evt = log.Event.new_message()
@@ -67,21 +67,18 @@ def test_nav_state_sp_rlog_roundtrip():
   road.ageMs = 1000
 
   curve = ns.init("curveAhead")
-  curve.pointCount = 2
-  curve.maxLateralAccelerationMPerS2 = 2.0
-  curve.horizonDistanceM = 600
+  curve.pointCount = 3
+  curve.horizonDistanceM = 10
   curve.ageMs = 120
   curve.alongRoute = True
   curve.roadLookahead = False
-  curve.smoothed = True
-  points = curve.init("points", 2)
-  points[0].distanceAlongRouteM = 50
-  points[0].targetSpeedKph = 40
-  points[0].curvaturePerM = 0.02
-  points[1].distanceAlongRouteM = 60
-  points[1].targetSpeedKph = 41
-  points[1].curvaturePerM = 0.0201
-
+  curve.smoothed = False
+  curve.spacingM = 10
+  curve.firstOffsetM = -10.0
+  curvatures = curve.init("curvaturesPerM", 3)
+  curvatures[0] = 0.0
+  curvatures[1] = 0.02
+  curvatures[2] = -0.0201
   debug = ns.init("navDebug")
   debug.renderDurationUs = 4200
   debug.mapMatchDurationUs = 1800
@@ -95,14 +92,13 @@ def test_nav_state_sp_rlog_roundtrip():
     assert got.frameIndex == 9
     assert got.phoneLocationOk
     assert got.hasCurveAhead
-    assert got.curveAhead.pointCount == 2 and len(got.curveAhead.points) == 2
-    assert got.curveAhead.maxLateralAccelerationMPerS2 == 2.0
-    assert got.curveAhead.alongRoute and not got.curveAhead.roadLookahead and got.curveAhead.smoothed
-    assert math.isclose(got.curveAhead.points[0].curvaturePerM, 0.02, rel_tol=1e-6)
-    assert got.curveAhead.points[1].targetSpeedKph == 41
-    assert list(got.curveAhead.points[0].schema.fields.keys()) == [
-      "distanceAlongRouteM", "targetSpeedKph", "curvaturePerM"]
-
+    assert got.curveAhead.pointCount == 3 and len(got.curveAhead.curvaturesPerM) == 3
+    assert got.curveAhead.spacingM == 10
+    assert math.isclose(got.curveAhead.firstOffsetM, -10.0, rel_tol=1e-6)
+    assert got.curveAhead.horizonDistanceM == 10
+    assert got.curveAhead.alongRoute and not got.curveAhead.roadLookahead and not got.curveAhead.smoothed
+    assert math.isclose(got.curveAhead.curvaturesPerM[1], 0.02, rel_tol=1e-6)
+    assert math.isclose(got.curveAhead.curvaturesPerM[2], -0.0201, rel_tol=1e-6)
 
 def test_nav_state_sp_float_invalid_is_nan():
   evt = log.Event.new_message()

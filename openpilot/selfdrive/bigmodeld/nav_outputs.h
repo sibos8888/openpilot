@@ -1,11 +1,10 @@
 #pragma once
 
-// NavExt（REPLY 8304，160 B）→ 车机侧输出。纯逻辑、无 cereal / Params 依赖，宿主单测直接编译：
+// NavExt（REPLY 8304，304 B）→ 车机侧输出。纯逻辑、无 cereal / Params 依赖，宿主单测直接编译：
 //   1. NavStateSnapshot：REPLY → navStateSP 的字段快照（main.cc 再逐字段写 capnp）。
-//      CURVE_AHEAD 只取 count / 横向加速度上限 / 前视距离 / age_ms / curve_flags 与每点的
-//      距离 / 目标速度 / 曲率，**不读点经纬度**（决策 17：rlog 与 UI 不含任何经纬度）。
+//      CURVE_AHEAD 只含等距沿路线/道路曲率剖面（不含经纬度，决策 17）。
 //   2. NavLinkCache：最近一条 REPLY 的 NavExt 摘要；断连必须 reset()，保证重连后第一条 REPLY
-//      到达前按「无数据」处理（S2：旧弯道点不能被写回）。
+//      到达前按「无数据」处理（S2：旧弯道曲线不能被写回）。
 //   3. MapTargetWriter：手机位置健康 + CURVE 沿路线距离 → 带本机期限的 Params envelope。
 //      失效/删点/降速立即清空或更新，其余变化 ≤2 Hz，不变 1 Hz 刷新。
 //   4. clear_map_targets()：退出/上路清理，由 main 注入阻塞 Params put。
@@ -70,21 +69,16 @@ struct NavStateSnapshot {
     uint16_t age_ms = 0;                   // 0xFFFF 无效
   } road_attributes;
 
-  struct CurvePointFields {
-    uint16_t distance_along_route_m = 0;   // 0xFFFF 无效
-    uint8_t target_speed_kph = 0;          // 0 无
-    float curvature_per_m = 0.f;           // 线上 1e-4 /m 换算成 1/m；0 = 直线
-  };
-
   struct CurveAheadFields {
-    uint8_t point_count = 0;
-    float max_lateral_acceleration_m_per_s2 = 0.f;
-    uint16_t horizon_distance_m = 0;
-    uint16_t age_ms = 0;                   // 0xFFFF 无效
-    bool along_route = false;              // curve_flags bit0：沿路线取
-    bool road_lookahead = false;           // bit1：沿当前道路前扫
-    bool smoothed = false;                 // bit2：曲率已平滑
-    CurvePointFields points[bgm1::kCurveMaxPoints];
+    uint8_t sample_count = 0;
+    uint8_t spacing_m = 0;
+    float first_offset_m = 0.f;           // NaN = 线上 INT16_MIN 无效
+    uint16_t horizon_distance_m = 0;      // 派生可用前方距离 m
+    uint16_t age_ms = 0;                  // 0xFFFF 无效
+    bool along_route = false;             // curve_flags bit0：沿路线取
+    bool road_lookahead = false;          // bit1：沿当前道路前扫
+    bool smoothed = false;                // bit2：曲率已平滑（0 = 原始曲率）
+    float curvatures_per_m[bgm1::kCurveMaxSamples] = {};  // 1/m；NaN = INT16_MIN 无效
   } curve_ahead;
 
   struct NavDebugFields {
@@ -139,10 +133,6 @@ class NavLinkCache {
 };
 
 constexpr uint64_t kNavDataMaxAgeNs = 2'000'000'000;  // 手机采样与距离结果各自的期限
-// N1 的 (lat,lon) 同一性匹配容差：50 × 1e-7° ≈ 0.55 m。手机重算/重采样会让同一点有厘米级抖动；
-// 若用严格相等，N10 的「点坐标每拍微动」会全部被判成删点，退回 20 Hz 写。
-// 注意：这是方框容差，纬度、经度分别比较；经度方向的实际距离是 0.55·cosφ m。
-constexpr int32_t kSamePointToleranceX1e7 = 50;
 
 // 手机 NAV_STATE 和 CURVE 的年龄独立判期；时间基准为回显的 C4 t_eof。
 struct MapTargetInput {
@@ -158,14 +148,13 @@ struct MapTargetInput {
 };
 
 // 写 MapTargetVelocities 的时机：
-//   - 有目标点被删除（含清空）或容差内同一点目标速度下调 → 下一拍写（≤1 个 calib 拍：正常 ≤50 ms，
-//     modeld 不发导致 calib 只能按 1 s 超时醒来时最长约 1 s；SCC-map 对旧点有粘滞，N1/N2）。
-//   - 其他内容变化（上新点/提速）：≥500 ms（≤2 Hz）。
+//   - 清空 / spacing 变化 / 最大曲率增大 ≥5e-5 / 近场 [0,150 m] 最大曲率下降 ≥1e-4 /
+//     整体最大曲率降回 0 → 下一拍立即写（≤1 个 calib 拍：正常 ≤50 ms）。
+//   - 其他内容变化（首样偏移推进 / 小幅曲率更新）：≥500 ms（≤2 Hz）。
 //   - 内容不变：≥1 s 刷新（有意为之：可自愈被外部改写的值）。
-//   - 首次调用必写（清掉上趟进程遗留的弯道点）。
+//   - 首次调用必写（清掉上趟进程遗留的弯道数据）。
 //   - NAV_STATE/CURVE 缺失、phone_location_ok=0、任一年龄未知/过期或断连 → []。
-//   - rerouting 或沿路线但 route_ok=0 → []；只接受 0..600 m 单调距离。
-//   - 目标坐标只作身份比较，不读取车机位置，也不计算地理距离。
+//   - rerouting 或沿路线但 route_ok=0 → []；要求合法间距/首偏移/无无效采样且至少有一前向采样。
 class MapTargetWriter {
  public:
   // 返回 nullopt = 本次不写。
@@ -175,23 +164,16 @@ class MapTargetWriter {
   static constexpr uint64_t kMinChangedIntervalNs = 500'000'000;  // 2 Hz 上限
   static constexpr uint64_t kRefreshIntervalNs = 1'000'000'000;   // 不变也 1 Hz 刷新
 
-  struct WrittenPoint {
-    int32_t latitude_deg_x1e7 = 0;
-    int32_t longitude_deg_x1e7 = 0;
-    uint8_t target_speed_kph = 0;
-    uint16_t distance_along_route_m = 0;
-  };
-
-  static bool point_usable(const bgm1::CurvePoint& p);
-  static int usable_point_count(const MapTargetInput& in);
-  bool same_points(const MapTargetInput& in, int n) const;
-  // N1/N2：上次写出的点被删除，或容差内同一点速度下调 → 下一拍写（≤1 个 calib 拍）
+  static bool profile_usable(const bgm1::CurveAhead& c);
+  bool same_profile(const MapTargetInput& in, int n) const;
   bool urgent_change(const MapTargetInput& in, int n) const;
 
   bool wrote_ = false;
   uint64_t last_write_ns_ = 0;
-  int last_point_count_ = 0;
-  WrittenPoint last_points_[bgm1::kCurveMaxPoints];
+  int last_sample_count_ = 0;
+  uint8_t last_spacing_m_ = 0;
+  int16_t last_first_offset_dm_ = 0;
+  int16_t last_curvatures_x1e5_[bgm1::kCurveMaxSamples] = {};
 };
 
 struct NavLinkTick {

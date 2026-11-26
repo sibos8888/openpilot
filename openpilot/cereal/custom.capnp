@@ -595,19 +595,22 @@ struct NavStateSP @0xc2243c65e0340384 {
   }
 
   struct CurveAhead {
-    pointCount @0 :UInt8;                 # 0–8；与 points 长度一致
-    maxLateralAccelerationMPerS2 @1 :Float32;  # 线上 0.1 m/s²，换算成 m/s²
-    horizonDistanceM @2 :UInt16;          # 采样覆盖的前方距离 m
+    pointCount @0 :UInt8;                 # 0–120；与 curvaturesPerM 长度一致
+    maxLateralAccelerationMPerS2DEPRECATED @1 :Float32;
+    horizonDistanceM @2 :UInt16;          # 派生可用前方距离 m
     ageMs @3 :UInt16;                     # 0xFFFE 饱和；0xFFFF 未知/无效
-    points @4 :List(CurvePoint);          # 不含经纬度（决策 17）
+    pointsDEPRECATED @4 :List(CurvePointDEPRECATED);  # 旧 v4 字段
     alongRoute @5 :Bool;                  # curve_flags bit0：点沿路线取
     roadLookahead @6 :Bool;               # bit1：沿当前道路前扫（无路线）
-    smoothed @7 :Bool;                    # bit2：曲率已平滑
+    smoothed @7 :Bool;                    # bit2：曲率已平滑（0 = 原始曲率）
+    spacingM @8 :UInt8;                   # 采样间距 m（典型 10；0 无效）
+    firstOffsetM @9 :Float32;             # 线上 0.1 m（有符号）；NaN = INT16_MIN 无效
+    curvaturesPerM @10 :List(Float32);    # 1/m（左转+ / 右转- / 直0；NaN = INT16_MIN 无效）
 
-    struct CurvePoint {
-      distanceAlongRouteM @0 :UInt16;     # 0xFFFF 无效
-      targetSpeedKph @1 :UInt8;           # 0 无
-      curvaturePerM @2 :Float32;          # 线上 1e-4 /m，换算成 1/m；0 = 直线
+    struct CurvePointDEPRECATED {
+      distanceAlongRouteM @0 :UInt16;
+      targetSpeedKph @1 :UInt8;
+      curvaturePerM @2 :Float32;
     }
   }
 

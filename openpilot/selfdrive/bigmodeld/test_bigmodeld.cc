@@ -804,13 +804,13 @@ static void test_avahi_locator() {
 // frame_codec：往返 + 坏输入（冒烟）
 // =====================================================================
 
-static void test_v4_frame_contract() {
-  CHECK(bgm1::kVersion == 4);
+static void test_v5_frame_contract() {
+  CHECK(bgm1::kVersion == 5);
   CHECK(bgm1::kFrameHdrSize == 152 && bgm1::kFrameMinSize == 172);
   bgm1::FrameHeader h;
   uint8_t wire[bgm1::kFrameHdrSize];
   bgm1::pack_frame_header(h, wire);
-  wire[4] = 3;
+  wire[4] = 4;
   CHECK(bgm1::parse_frame(wire, 16, nullptr) == bgm1::Err::kBadVersion);
   wire[5] = bgm1::kTypeHello;
   CHECK(bgm1::parse_hello(wire, 16, nullptr) == bgm1::Err::kBadVersion);
@@ -838,8 +838,8 @@ static void test_frame_codec_roundtrip() {
   CHECK(fv.hdr.flags == bgm1::kFlagRoadIdr && fv.hdr.road_idr() && !fv.hdr.wide_idr());
   CHECK(fv.hdr.frame_idx == 33 && fv.hdr.road_len == 11 && fv.hdr.wide_len == 5);
   CHECK(fv.hdr.t_eof == h.t_eof);
-  CHECK(bgm1::kVersion == 4 && bgm1::kFrameHdrSize == 152 && bgm1::frame_wire_size(1000, 700) == 1872);
-  CHECK(buf[4] == 4 && !fv.hdr.vehicle.speed_valid() && fv.hdr.vehicle.yaw_rate_centideg_per_s == INT16_MIN);
+  CHECK(bgm1::kVersion == 5 && bgm1::kFrameHdrSize == 152 && bgm1::frame_wire_size(1000, 700) == 1872);
+  CHECK(buf[4] == 5 && !fv.hdr.vehicle.speed_valid() && fv.hdr.vehicle.yaw_rate_centideg_per_s == INT16_MIN);
   for (int i = 0; i < 8; i++) CHECK_NEAR(fv.hdr.desire[i], h.desire[i], 1e-6);
   for (int i = 0; i < 9; i++) {
     CHECK_NEAR(fv.hdr.warp_road[i], h.warp_road[i], 1e-6);
@@ -860,13 +860,13 @@ static void test_frame_codec_roundtrip() {
   CHECK(bgm1::parse_frame(bad.data(), bad.size(), &fv) == bgm1::Err::kBadType);
   CHECK(bgm1::parse_frame(buf.data(), buf.size() - 1, &fv) == bgm1::Err::kLenMismatch);
   CHECK(bgm1::parse_frame(buf.data(), bgm1::kFrameMinSize - 1, &fv) == bgm1::Err::kTruncated);
-  // 旧 v3 / 未来 v5：ver 在前 16 B 先拒
+  // 旧 v4 / 未来 v6：ver 在前 16 B 先拒
   bad = buf;
-  bad[4] = 3;
+  bad[4] = 4;
   CHECK(bgm1::parse_frame(bad.data(), bad.size(), &fv) == bgm1::Err::kBadVersion);
-  bad[4] = 5;
+  bad[4] = 6;
   CHECK(bgm1::parse_frame(bad.data(), bad.size(), &fv) == bgm1::Err::kBadVersion);
-  CHECK(bgm1::version_mismatch_detail(3, 4) == 0x0304u);
+  CHECK(bgm1::version_mismatch_detail(4, 5) == 0x0405u);
   // road_len 超上限 → kLenTooLarge（不是截断）
   bad = buf;
   bad[12] = 0xff; bad[13] = 0xff; bad[14] = 0xff; bad[15] = 0xff;
@@ -890,9 +890,9 @@ static void test_frame_codec_roundtrip() {
   CHECK(bgm1::parse_hello(hbuf.data(), hbuf.size(), &h2) == bgm1::Err::kOk);
   CHECK(h2.instance_id == hello.instance_id && h2.max_frame == hello.max_frame);
   CHECK(bgm1::parse_hello(hbuf.data(), bgm1::kHelloWireSize - 1, &h2) == bgm1::Err::kTruncated);
-  // golden 逐字节钉死（app/tests/fixtures/hello_golden.bin 同一样例，跨仓库镜像互证；ver=4）
+  // golden 逐字节钉死（app/tests/fixtures/hello_golden.bin 同一样例，跨仓库镜像互证；ver=5）
   static const uint8_t kHelloGolden[bgm1::kHelloWireSize] = {
-      0x42, 0x47, 0x4D, 0x31, 0x04, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x42, 0x47, 0x4D, 0x31, 0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
       0x10, 0x00, 0x00, 0x00, 0xEF, 0xCD, 0xAB, 0x89, 0x67, 0x45, 0x23, 0x01,
       0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   };
@@ -917,26 +917,30 @@ static void test_reply_err_roundtrip() {
   for (size_t i = 0; i < bgm1::kReplyOutputsCount; i++) outputs_ok &= (out.outputs[i] == r.outputs[i]);
   CHECK(outputs_ok);
   for (size_t i = 0; i < bgm1::kReplyTelemetryCount; i++) CHECK(out.telemetry[i] == r.telemetry[i]);
-  // v4：REPLY 8480 B / len 8440；缺省 Reply 的 NavExt 160 B 全 0（present_flags=0 = 无导航数据）
-  CHECK(bgm1::kReplyWireSize == 8480 && bgm1::kReplyPayloadSize == 8440 && bgm1::kReplyNavExtSize == 160);
+  // v5：REPLY 8624 B / len 8584；缺省 Reply 的 NavExt 304 B 全 0（present_flags=0 = 无导航数据）
+  CHECK(bgm1::kReplyWireSize == 8624 && bgm1::kReplyPayloadSize == 8584 && bgm1::kReplyNavExtSize == 304);
   bool nav_zero = out.nav_ext.present_flags == 0 && out.nav_ext.nav_health_flags == 0;
-  for (size_t i = 8304; i < 8464; i++) nav_zero &= buf[i] == 0;
+  for (size_t i = 8304; i < 8608; i++) nav_zero &= buf[i] == 0;
   CHECK(nav_zero);
 
-  // NavExt 往返：四个子结构 + present_flags / nav_health_flags 位；CURVE point_count=3 → 第 3–7 点 pack 为 0
+  // NavExt 往返：四个子结构 + present_flags / nav_health_flags 位；CURVE sample_count=3 → 第 3–119 采样 pack 为 0
   r.nav_ext.present_flags = bgm1::kNavPresentNavState | bgm1::kNavPresentRoadAttr | bgm1::kNavPresentCurveAhead |
                       bgm1::kNavPresentNavDebug;
   r.nav_ext.nav_health_flags = bgm1::kNavHealthPhoneLocationOk | bgm1::kNavHealthRerouting;
   r.nav_ext.nav_state = {3, 20, 255, 2, 350, 0xFFFFFFFFu, 987, 40, 0x0F, 254, 0xFFFF};
   r.nav_ext.road_attr = {80, 1, 0, 255, 0xFFFF, 1000, 0x85, 3, 25};
-  r.nav_ext.curve_ahead.point_count = 3;
-  r.nav_ext.curve_ahead.max_lateral_acceleration_dm_per_s2 = 20;
-  r.nav_ext.curve_ahead.horizon_distance_m = 600;
-  for (int i = 0; i < 8; i++) r.nav_ext.curve_ahead.points[i] = {1000 * i, -2000 * i, uint16_t(50 + i), uint8_t(40 + i), uint8_t(i)};
+  r.nav_ext.curve_ahead.sample_count = 3;
+  r.nav_ext.curve_ahead.spacing_m = 10;
+  r.nav_ext.curve_ahead.first_offset_dm = -185;
+  r.nav_ext.curve_ahead.age_ms = 100;
+  r.nav_ext.curve_ahead.curve_flags = 0x01;
+  for (int i = 0; i < int(bgm1::kCurveMaxSamples); i++) {
+    r.nav_ext.curve_ahead.curvature_per_m_x1e5[i] = int16_t(((i % 21) - 10) * 150);
+  }
   r.nav_ext.nav_debug = {4200, 1800, 35, 27};
   CHECK(bgm1::pack_reply(r, buf.data(), buf.size()) == bgm1::kReplyWireSize);
   bool tail_zero = true;
-  for (size_t i = 8356 + 12 * 3; i < 8452; i++) tail_zero &= buf[i] == 0;
+  for (size_t i = 8348 + 8 + 2 * 3; i < 8596; i++) tail_zero &= buf[i] == 0;
   CHECK(tail_zero);
   CHECK(bgm1::parse_reply(buf.data(), buf.size(), &out) == bgm1::Err::kOk);
   CHECK(out.nav_ext.present_flags == 0x0F && out.nav_ext.nav_health_flags == 0x09);
@@ -944,47 +948,52 @@ static void test_reply_err_roundtrip() {
         out.nav_ext.nav_state.route_remaining_m == 0xFFFFFFFFu && out.nav_ext.nav_state.heading_centideg == 0xFFFF);
   CHECK(out.nav_ext.road_attr.speed_limit_kph == 80 && out.nav_ext.road_attr.road_class == 255 &&
         out.nav_ext.road_attr.speed_limit_ahead_distance_m == 0xFFFF && out.nav_ext.road_attr.road_edge_flags == 0x85);
-  CHECK(out.nav_ext.curve_ahead.point_count == 3 && out.nav_ext.curve_ahead.points[2].latitude_deg_x1e7 == 2000 &&
-        out.nav_ext.curve_ahead.points[3].latitude_deg_x1e7 == 0 && out.nav_ext.curve_ahead.points[7].distance_along_route_m == 0);
+  CHECK(out.nav_ext.curve_ahead.sample_count == 3 && out.nav_ext.curve_ahead.spacing_m == 10 &&
+        out.nav_ext.curve_ahead.first_offset_dm == -185 && out.nav_ext.curve_ahead.age_ms == 100 &&
+        out.nav_ext.curve_ahead.curve_flags == 0x01);
+  CHECK(out.nav_ext.curve_ahead.curvature_per_m_x1e5[0] == -1500 &&
+        out.nav_ext.curve_ahead.curvature_per_m_x1e5[2] == -1200 &&
+        out.nav_ext.curve_ahead.curvature_per_m_x1e5[3] == 0 &&
+        out.nav_ext.curve_ahead.curvature_per_m_x1e5[119] == 0);
   CHECK(out.nav_ext.nav_debug.render_duration_us == 4200 && out.nav_ext.nav_debug.nav_cpu_usage_percent == 27);
   // present_flags 位为 0 的子结构读作 0（即使线上有垃圾）
   std::vector<uint8_t> garbage = buf;
   garbage[8304] = bgm1::kNavPresentNavState;
-  std::memset(garbage.data() + 8332, 0x55, 120);
+  std::memset(garbage.data() + 8332, 0x55, 272);
   CHECK(bgm1::parse_reply(garbage.data(), garbage.size(), &out) == bgm1::Err::kOk);
   CHECK(out.nav_ext.nav_state.maneuver_type == 20 && out.nav_ext.road_attr.speed_limit_kph == 0 &&
-        out.nav_ext.curve_ahead.point_count == 0 && out.nav_ext.nav_debug.render_duration_us == 0);
+        out.nav_ext.curve_ahead.sample_count == 0 && out.nav_ext.nav_debug.render_duration_us == 0);
 
   CHECK(bgm1::parse_reply(buf.data(), buf.size() - 1, &out) == bgm1::Err::kTruncated);
-  // len 不符 / 多 1 字节 → kLenMismatch；旧 v2 的 8320 B REPLY（len=8280）→ kBadVersion（ver 先于长度）
+  // len 不符 / 多 1 字节 → kLenMismatch；旧 v4 的 8480 B REPLY（len=8440）→ kBadVersion（ver 先于长度）
   std::vector<uint8_t> lenbad = buf;
   lenbad[12] = 0x58; lenbad[13] = 0x20;  // len = 8280
   CHECK(bgm1::parse_reply(lenbad.data(), lenbad.size(), &out) == bgm1::Err::kLenMismatch);
   lenbad = buf;
   lenbad.push_back(0);
   CHECK(bgm1::parse_reply(lenbad.data(), lenbad.size(), &out) == bgm1::Err::kLenMismatch);
-  std::vector<uint8_t> v2(buf.begin(), buf.begin() + 8320);
-  v2[4] = 2;
-  v2[12] = 0x58; v2[13] = 0x20;
-  CHECK(bgm1::parse_reply(v2.data(), v2.size(), &out) == bgm1::Err::kBadVersion);
+  std::vector<uint8_t> v4(buf.begin(), buf.begin() + 8480);
+  v4[4] = 4;
+  v4[12] = 0xF8; v4[13] = 0x20;  // 8440
+  CHECK(bgm1::parse_reply(v4.data(), v4.size(), &out) == bgm1::Err::kBadVersion);
   std::vector<uint8_t> bad = buf;
   bad[5] = bgm1::kTypeFrame;
   CHECK(bgm1::parse_reply(bad.data(), bad.size(), &out) == bgm1::Err::kBadType);
 
   bgm1::ErrMsg e;
   e.code = bgm1::kErrVersionMismatch;
-  e.detail = bgm1::version_mismatch_detail(3, bgm1::kVersion);
+  e.detail = bgm1::version_mismatch_detail(4, bgm1::kVersion);
   e.frame_idx = 13;
   std::vector<uint8_t> ebuf(bgm1::kErrWireSize);
   CHECK(bgm1::pack_err(e, ebuf.data(), ebuf.size()) == bgm1::kErrWireSize);
   bgm1::ErrMsg eout;
   CHECK(bgm1::parse_err(ebuf.data(), ebuf.size(), &eout) == bgm1::Err::kOk);
-  CHECK(eout.code == bgm1::kErrVersionMismatch && eout.detail == 0x0304u && eout.frame_idx == 13);
+  CHECK(eout.code == bgm1::kErrVersionMismatch && eout.detail == 0x0405u && eout.frame_idx == 13);
   CHECK(bgm1::parse_err(ebuf.data(), ebuf.size() - 1, &eout) == bgm1::Err::kTruncated);
 }
 
-// v4 运动有效位与保留位；parse 同样规范化不可信输入。
-static void test_v4_normalisation() {
+// v5 运动有效位与保留位；parse 同样规范化不可信输入。
+static void test_v5_normalisation() {
   uint8_t buf[bgm1::kFrameHdrSize];
   bgm1::FrameHeader h, back;
   h.vehicle = {-300, 0xFF, 789};
@@ -1019,20 +1028,22 @@ static void test_v4_normalisation() {
   bgm1::pack_reply(r, rb.data(), rb.size());
   CHECK(rb[8304] == 0x0F && rb[8305] == 0x0F && rb[8308 + 18] == 0x0F && rb[8332 + 8] == 0xBF && rb[8348 + 6] == 0x07);
 
-  // CURVE point_count>8：打包钳到 8；线上 point_count>8 = 坏块，清 present_flags bit2、子块整块缺省
+  // CURVE sample_count>120：打包钳到 120；线上 sample_count>120 = 坏块，清 present_flags bit2、子块整块缺省
   r = bgm1::Reply{};
   r.nav_ext.present_flags = bgm1::kNavPresentCurveAhead | bgm1::kNavPresentNavDebug;
-  r.nav_ext.curve_ahead.point_count = 200;
-  r.nav_ext.curve_ahead.horizon_distance_m = 600;
+  r.nav_ext.curve_ahead.sample_count = 200;
+  r.nav_ext.curve_ahead.spacing_m = 10;
+  r.nav_ext.curve_ahead.first_offset_dm = -185;
+  r.nav_ext.curve_ahead.curvature_per_m_x1e5[0] = 150;
   r.nav_ext.nav_debug.render_duration_us = 4200;
   bgm1::pack_reply(r, rb.data(), rb.size());
-  CHECK(rb[8348] == 8);
-  rb[8348] = 9;
+  CHECK(rb[8348] == 120);
+  rb[8348] = 121;
   bgm1::Reply out;
   CHECK(bgm1::parse_reply(rb.data(), rb.size(), &out) == bgm1::Err::kOk);
   CHECK(!(out.nav_ext.present_flags & bgm1::kNavPresentCurveAhead) && (out.nav_ext.present_flags & bgm1::kNavPresentNavDebug));
-  CHECK(out.nav_ext.curve_ahead.point_count == 0 && out.nav_ext.curve_ahead.horizon_distance_m == 0 &&
-        out.nav_ext.curve_ahead.points[0].latitude_deg_x1e7 == 0);
+  CHECK(out.nav_ext.curve_ahead.sample_count == 0 && out.nav_ext.curve_ahead.spacing_m == 0 &&
+        out.nav_ext.curve_ahead.first_offset_dm == 0 && out.nav_ext.curve_ahead.curvature_per_m_x1e5[0] == 0);
   CHECK(out.nav_ext.nav_debug.render_duration_us == 4200);  // 其余子块不受影响
 }
 
@@ -1107,8 +1118,12 @@ static void test_cross_end_golden() {
   CHECK(r.nav_ext.present_flags == 0x0F && r.nav_ext.nav_health_flags == 0x07);
   CHECK(r.nav_ext.nav_state.maneuver_type == 26 && r.nav_ext.nav_state.route_remaining_m == 12345);
   CHECK(r.nav_ext.road_attr.speed_limit_kph == 80 && r.nav_ext.road_attr.road_edge_flags == 0x85);
-  CHECK(r.nav_ext.curve_ahead.point_count == 8 && r.nav_ext.curve_ahead.points[7].latitude_deg_x1e7 == 374220000 + 7000 &&
-        r.nav_ext.curve_ahead.points[7].curvature_per_m_x1e4 == 150);
+  CHECK(r.nav_ext.curve_ahead.sample_count == 120 && r.nav_ext.curve_ahead.spacing_m == 10 &&
+        r.nav_ext.curve_ahead.first_offset_dm == -185 && r.nav_ext.curve_ahead.age_ms == 100 &&
+        r.nav_ext.curve_ahead.curve_flags == 0x01);
+  for (int i = 0; i < 120; i++) {
+    CHECK(r.nav_ext.curve_ahead.curvature_per_m_x1e5[i] == ((i % 21) - 10) * 150);
+  }
   CHECK(r.nav_ext.nav_debug.render_duration_us == 4200 && r.nav_ext.nav_debug.nav_cpu_usage_percent == 27);
   std::vector<uint8_t> rpacked(bgm1::kReplyWireSize);
   CHECK(bgm1::pack_reply(r, rpacked.data(), rpacked.size()) == bgm1::kReplyWireSize);
@@ -1162,7 +1177,6 @@ static void test_warp_golden() {
   // rpy=0 标定性抽查：road[0] = fl_narrow/910、road[2] = cx − road[0]·256
   CHECK_NEAR(kWarpGolden[0].road[0], 2648.0 / 910.0, 1e-6);
   CHECK_NEAR(kWarpGolden[0].road[2], 964.0 - (2648.0 / 910.0) * 256.0, 1e-3);
-
   for (const WarpGolden& g : kWarpGolden) {
     float road[9], wwide[9];
     get_warp_matrix(g.rpy, kNarrowRoadIntrinsics, false, road);
@@ -2065,15 +2079,14 @@ static bgm1::Reply nav_reply_fixture() {
   r.nav_ext.nav_health_flags = bgm1::kNavHealthPhoneLocationOk | bgm1::kNavHealthNavOk;
   r.nav_ext.nav_state = {2, 20, 255, 2, 350, 12000, 900, 40, 0x07, 254, 9000};
   r.nav_ext.road_attr = {80, 1, 60, 3, 150, 1000, 0x85, 3, 25};
-  r.nav_ext.curve_ahead.point_count = 3;
-  r.nav_ext.curve_ahead.max_lateral_acceleration_dm_per_s2 = 20;
-  r.nav_ext.curve_ahead.horizon_distance_m = 600;
+  r.nav_ext.curve_ahead.sample_count = 3;
+  r.nav_ext.curve_ahead.spacing_m = 10;
+  r.nav_ext.curve_ahead.first_offset_dm = -100;  // -10.0 m → horizon = round(-10 + 2*10) = 10 m
   r.nav_ext.curve_ahead.age_ms = 120;
   r.nav_ext.curve_ahead.curve_flags = 0x05;  // 沿路线 + 已平滑
-  for (int i = 0; i < 3; i++) {
-    r.nav_ext.curve_ahead.points[i] = {374220000 + 100 * i, -1220840000 - 100 * i,
-                                       uint16_t(50 + 10 * i), uint8_t(40 + i), uint8_t(200 + i)};
-  }
+  r.nav_ext.curve_ahead.curvature_per_m_x1e5[0] = 0;
+  r.nav_ext.curve_ahead.curvature_per_m_x1e5[1] = 2000;
+  r.nav_ext.curve_ahead.curvature_per_m_x1e5[2] = -2020;
   r.nav_ext.nav_debug = {4200, 1800, 35, 27};
   return r;
 }
@@ -2125,14 +2138,13 @@ static void test_nav_state_snapshot_values() {
   CHECK(s.road_attributes.lane_count == 3 && s.road_attributes.age_ms == 1000);
   CHECK_NEAR(s.road_attributes.match_distance_m, 2.5, 1e-6);  // 25 dm
 
-  CHECK(s.curve_ahead.point_count == 3 && s.curve_ahead.horizon_distance_m == 600 &&
-        s.curve_ahead.age_ms == 120);
-  CHECK_NEAR(s.curve_ahead.max_lateral_acceleration_m_per_s2, 2.0, 1e-6);  // 20 × 0.1
-  CHECK(s.curve_ahead.points[0].distance_along_route_m == 50 &&
-        s.curve_ahead.points[2].target_speed_kph == 42);
-  CHECK_NEAR(s.curve_ahead.points[0].curvature_per_m, 0.0200, 1e-6);  // 200 × 1e-4
-  CHECK_NEAR(s.curve_ahead.points[2].curvature_per_m, 0.0202, 1e-6);
-  CHECK(s.curve_ahead.points[3].distance_along_route_m == 0);  // count 之外不镜像
+  CHECK(s.curve_ahead.sample_count == 3 && s.curve_ahead.spacing_m == 10 &&
+        s.curve_ahead.horizon_distance_m == 10 && s.curve_ahead.age_ms == 120);
+  CHECK_NEAR(s.curve_ahead.first_offset_m, -10.0, 1e-6);
+  CHECK_NEAR(s.curve_ahead.curvatures_per_m[0], 0.0, 1e-6);
+  CHECK_NEAR(s.curve_ahead.curvatures_per_m[1], 0.0200, 1e-6);
+  CHECK_NEAR(s.curve_ahead.curvatures_per_m[2], -0.0202, 1e-6);
+  CHECK(s.curve_ahead.curvatures_per_m[3] == 0.0f);  // sample_count 之外不镜像
   CHECK(s.curve_ahead.along_route && !s.curve_ahead.road_lookahead && s.curve_ahead.smoothed);
 
   CHECK(s.nav_debug.render_duration_us == 4200 && s.nav_debug.map_match_duration_us == 1800 &&
@@ -2141,9 +2153,14 @@ static void test_nav_state_snapshot_values() {
   // 线上无效哨兵 → NaN（0 是有效值，不拿 0 表示缺失）
   r.nav_ext.nav_state.heading_centideg = bgm1::kNavU16Invalid;
   r.nav_ext.road_attr.match_distance_dm = bgm1::kNavU16Invalid;
+  r.nav_ext.curve_ahead.first_offset_dm = bgm1::kCurveInvalidOffsetDm;
+  r.nav_ext.curve_ahead.curvature_per_m_x1e5[1] = bgm1::kCurveInvalidCurvature;
   s = nav_state_snapshot_from_reply(r);
   CHECK(std::isnan(s.nav_state.heading_deg));
   CHECK(std::isnan(s.road_attributes.match_distance_m));
+  CHECK(std::isnan(s.curve_ahead.first_offset_m));
+  CHECK(s.curve_ahead.horizon_distance_m == 0);
+  CHECK(std::isnan(s.curve_ahead.curvatures_per_m[1]));
 }
 
 static void test_nav_state_snapshot_curve_flags() {
@@ -2154,28 +2171,27 @@ static void test_nav_state_snapshot_curve_flags() {
   CHECK(!s.curve_ahead.along_route && s.curve_ahead.road_lookahead && !s.curve_ahead.smoothed);
 }
 
-// 决策 17：快照只读点的距离 / 速度 / 曲率，经纬度改动不影响任何输出字段
-static void test_nav_state_snapshot_ignores_curve_coordinates() {
-  bgm1::Reply a = nav_reply_fixture();
-  bgm1::Reply b = nav_reply_fixture();
-  a.nav_ext.present_flags = b.nav_ext.present_flags = bgm1::kNavPresentCurveAhead;
-  for (int i = 0; i < int(bgm1::kCurveMaxPoints); i++) {
-    b.nav_ext.curve_ahead.points[i].latitude_deg_x1e7 = -a.nav_ext.curve_ahead.points[i].latitude_deg_x1e7 + 7;
-    b.nav_ext.curve_ahead.points[i].longitude_deg_x1e7 = a.nav_ext.curve_ahead.points[i].longitude_deg_x1e7 + 1234567;
-  }
-  const NavStateSnapshot sa = nav_state_snapshot_from_reply(a);
-  const NavStateSnapshot sb = nav_state_snapshot_from_reply(b);
-  CHECK(sa.curve_ahead.point_count == sb.curve_ahead.point_count);
-  CHECK_NEAR(sa.curve_ahead.max_lateral_acceleration_m_per_s2, sb.curve_ahead.max_lateral_acceleration_m_per_s2, 0);
-  for (int i = 0; i < int(bgm1::kCurveMaxPoints); i++) {
-    CHECK(sa.curve_ahead.points[i].distance_along_route_m == sb.curve_ahead.points[i].distance_along_route_m);
-    CHECK(sa.curve_ahead.points[i].target_speed_kph == sb.curve_ahead.points[i].target_speed_kph);
-    CHECK(sa.curve_ahead.points[i].curvature_per_m == sb.curve_ahead.points[i].curvature_per_m);
-  }
+static void test_nav_state_snapshot_horizon_derivation() {
+  bgm1::Reply r = nav_reply_fixture();
+  r.nav_ext.present_flags = bgm1::kNavPresentCurveAhead;
+  r.nav_ext.curve_ahead.sample_count = 120;
+  r.nav_ext.curve_ahead.spacing_m = 10;
+  r.nav_ext.curve_ahead.first_offset_dm = -185;  // -18.5 + 119*10 = 1171.5 -> 1172
+  NavStateSnapshot s = nav_state_snapshot_from_reply(r);
+  CHECK(s.curve_ahead.horizon_distance_m == 1172);
+
+  r.nav_ext.curve_ahead.sample_count = 2;
+  r.nav_ext.curve_ahead.first_offset_dm = -300;  // -30 + 10 = -20 -> clamped to 0
+  s = nav_state_snapshot_from_reply(r);
+  CHECK(s.curve_ahead.horizon_distance_m == 0);
+
+  r.nav_ext.curve_ahead.spacing_m = 0;
+  s = nav_state_snapshot_from_reply(r);
+  CHECK(s.curve_ahead.horizon_distance_m == 0);
 }
 
 // =====================================================================
-// MapTargetWriter：CURVE_AHEAD + 手机位置有效性 → MapTargetVelocities（≤2 Hz；失效/删点/降速立即写）
+// MapTargetWriter：CURVE_AHEAD + 手机位置有效性 → MapTargetVelocities（≤2 Hz；急变/失效立即写）
 // =====================================================================
 
 static MapTargetInput map_input(uint64_t now_ns = 10'000'000'000ULL) {
@@ -2188,28 +2204,16 @@ static MapTargetInput map_input(uint64_t now_ns = 10'000'000'000ULL) {
   in.now_ns = now_ns;
   in.last_reply_ns = now_ns - 50'000'000;  // 50 ms 前的 REPLY
   in.t_eof = now_ns - 50'000'000;          // REPLY 回显的帧时刻（N7 的基准）
-  in.curve.point_count = 8;
-  in.curve.max_lateral_acceleration_dm_per_s2 = 20;
-  in.curve.horizon_distance_m = 600;
+  in.curve.sample_count = 10;
+  in.curve.spacing_m = 10;
+  in.curve.first_offset_dm = -185;
   in.curve.age_ms = 100;
-  for (int i = 0; i < 8; i++) {
-    in.curve.points[i] = {374220000 + i, -1220840000 + i, uint16_t(10 * i),
-                          uint8_t(40 + i), uint8_t(200 + i)};
-  }
+  const int16_t ks[10] = {0, 0, 1250, 1250, 1250, -1000, -1000, -1000, 0, 0};
+  for (int i = 0; i < 10; i++) in.curve.curvature_per_m_x1e5[i] = ks[i];
   return in;
 }
 
-// 真实采样点间距 ~10 m；N1 的删点判定要在大于 0.55 m 容差的距离上测
-static MapTargetInput map_input_spaced(uint64_t now_ns) {
-  MapTargetInput in = map_input(now_ns);
-  for (int i = 0; i < 8; i++) {
-    in.curve.points[i].latitude_deg_x1e7 = 374220000 + i * 1000;
-    in.curve.points[i].longitude_deg_x1e7 = -1220840000 + i * 1000;
-  }
-  return in;
-}
-
-// AU-8：writer 输出与 tests/fixtures/map_target_eight_points.json 逐字节相等；SCC-map 的 Python 测试
+// AU-8：writer 输出与 tests/fixtures/map_target_profile.json 逐字节相等；SCC-map 的 Python 测试
 // （test_map_controller.py）读同一个文件，两端格式漂移时至少一端会红。文件缺失判失败。
 static std::string read_map_target_fixture() {
   const char* dir_env = std::getenv("BGM1_FIXTURE_DIR");
@@ -2220,10 +2224,10 @@ static std::string read_map_target_fixture() {
     dir = __FILE__;
     dir = dir.substr(0, dir.find_last_of('/') + 1) + "tests/fixtures";
   }
-  std::FILE* f = std::fopen((dir + "/map_target_eight_points.json").c_str(), "rb");
+  std::FILE* f = std::fopen((dir + "/map_target_profile.json").c_str(), "rb");
   std::string text;
   if (f != nullptr) {
-    char buf[1024];
+    char buf[4096];
     size_t n;
     while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) text.append(buf, n);
     std::fclose(f);
@@ -2231,13 +2235,11 @@ static std::string read_map_target_fixture() {
   return text;
 }
 
-static void test_map_target_eight_points_json() {
+static void test_map_target_profile_json() {
   MapTargetWriter w;
   const auto out = w.update(map_input());
   CHECK(out.has_value());
   if (!out) return;
-  // 与 SmartCruiseControlMap 单测共用带期限的沿路线距离 envelope；
-  // velocity = target_speed_kph / 3.6
   const std::string expected = read_map_target_fixture();
   CHECK(!expected.empty());
   CHECK(*out == expected);
@@ -2246,7 +2248,7 @@ static void test_map_target_eight_points_json() {
 static void test_map_target_count_zero_is_empty_list() {
   MapTargetWriter w;
   MapTargetInput in = map_input();
-  in.curve.point_count = 0;
+  in.curve.sample_count = 0;
   const auto out = w.update(in);
   CHECK(out.has_value() && *out == "[]");
 }
@@ -2255,27 +2257,32 @@ static void test_map_target_phone_deadline_envelope() {
   MapTargetWriter writer;
   auto in = map_input();
   in.nav_state_age_ms = 1500;
-  in.curve.point_count = 1;
-  in.curve.points[0].distance_along_route_m = 120;
-  const auto out = writer.update(in);
-  CHECK(out && *out == "{\"sample_time_ns\":9850000000,\"valid_until_ns\":10450000000,\"points\":[{\"latitude\":37.4220000,\"longitude\":-122.0840000,\"distance_m\":120,\"velocity\":11.111}]}");
+  in.curve.sample_count = 1;
+  in.curve.first_offset_dm = 1200;  // +120.0 m (exceeds 100.0 m max) -> verify clamp boundary too
+  CHECK(writer.update(in) == std::optional<std::string>("[]"));
+
+  MapTargetWriter writer2;
+  in.curve.first_offset_dm = 900;  // +90.0 m
+  in.curve.curvature_per_m_x1e5[0] = 500;
+  const auto out = writer2.update(in);
+  CHECK(out && *out == "{\"sample_time_ns\":9850000000,\"valid_until_ns\":10450000000,\"spacing_m\":10,\"first_offset_m\":90.0,\"curvatures\":[0.00500]}");
   // 刷新 CURVE 不能延长同一手机采样的期限。
   in.now_ns += 1'000'000'000ULL;
   in.t_eof += 1'000'000'000ULL;
   in.nav_state_age_ms += 1000;
-  const auto expired = writer.update(in);
+  const auto expired = writer2.update(in);
   CHECK(expired && *expired == "[]");
 }
 
-static void test_map_target_distance_refresh() {
+static void test_map_target_offset_refresh() {
   MapTargetWriter writer;
   auto in = map_input();
   CHECK(writer.update(in).has_value());
   in.now_ns += 500'000'000ULL;
   in.t_eof += 500'000'000ULL;
-  in.curve.points[1].distance_along_route_m = 9;
+  in.curve.first_offset_dm = -90;  // -9.0 m
   const auto out = writer.update(in);
-  CHECK(out && out->find("\"distance_m\":9,") != std::string::npos);
+  CHECK(out && out->find("\"first_offset_m\":-9.0,") != std::string::npos);
 }
 
 static void test_map_target_invalid_refresh_cadence() {
@@ -2289,8 +2296,7 @@ static void test_map_target_invalid_refresh_cadence() {
   CHECK(writer.update(in) == std::optional<std::string>("[]"));
 }
 
-// 失效路径都必须在 100 ms 内（不等 500 ms 节拍）发出清空（下一 calib 拍写盘）：
-// present=0、断链、t_eof 合成过期、手机位置无效、目标速度全 0
+// 失效路径都必须在 100 ms 内（不等 500 ms 节拍）发出清空（下一 calib 拍写盘）
 static void expect_immediate_clear(void (*mutate)(MapTargetInput*, uint64_t)) {
   MapTargetWriter w;
   const uint64_t now = 10'000'000'000ULL;
@@ -2302,10 +2308,21 @@ static void expect_immediate_clear(void (*mutate)(MapTargetInput*, uint64_t)) {
 }
 
 static void test_map_target_invalid_paths_clear_immediately() {
+  expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve.sample_count = 0; });
+  expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve.sample_count = 121; });
+  expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve.spacing_m = 0; });
+  expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve.spacing_m = 51; });
+  expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve.first_offset_dm = bgm1::kCurveInvalidOffsetDm; });
+  expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve.first_offset_dm = -1001; });
+  expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve.first_offset_dm = 1001; });
   expect_immediate_clear([](MapTargetInput* in, uint64_t) {
-    in->curve.points[2].distance_along_route_m = 5;
-    // 排序被破坏：不能继续保留上次写出的目标。
-    in->curve.points[3].distance_along_route_m = 1;
+    in->curve.curvature_per_m_x1e5[4] = bgm1::kCurveInvalidCurvature;
+  });
+  expect_immediate_clear([](MapTargetInput* in, uint64_t) {
+    // 全在车后：-30, -20, -10 < 0
+    in->curve.sample_count = 3;
+    in->curve.spacing_m = 10;
+    in->curve.first_offset_dm = -300;
   });
   expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve_present = false; });
   expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->link_connected = false; });
@@ -2323,11 +2340,6 @@ static void test_map_target_invalid_paths_clear_immediately() {
   expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->curve.age_ms = 0xFFFF; });
   expect_immediate_clear([](MapTargetInput* in, uint64_t now) { in->t_eof = now + 1; });
   expect_immediate_clear([](MapTargetInput* in, uint64_t) { in->t_eof = 1; });
-  expect_immediate_clear([](MapTargetInput* in, uint64_t) {
-    in->curve.point_count = 2;                          // 目标速度 0 = 线上「无」
-    in->curve.points[0].target_speed_kph = 0;
-    in->curve.points[1].target_speed_kph = 0;
-  });
 
   // AU-6：数据时刻 t_eof − age_ms 恰好 2 s 前仍有效（<=），再早 1 ns 过期
   for (const bool one_ns_older : {false, true}) {
@@ -2371,172 +2383,82 @@ static void test_map_target_invalid_paths_clear_immediately() {
   CHECK(out2.has_value() && *out2 == "[]");
 }
 
-static int json_point_count(const std::string& json) {
-  int points = 0;
-  for (size_t pos = 0; (pos = json.find("{\"latitude\"", pos)) != std::string::npos; pos++) points++;
-  return points;
-}
-
-// N1：删点（即使总点数不变）也立即写
-static void test_map_target_removed_point_writes_immediately() {
-  // 目标点变少（没清空）
-  {
-    MapTargetWriter w;
-    const uint64_t now = 10'000'000'000ULL;
-    CHECK(w.update(map_input_spaced(now)).has_value());
-    MapTargetInput in = map_input_spaced(now + 100'000'000ULL);
-    in.curve.point_count = 7;
-    const auto out = w.update(in);
-    CHECK(out.has_value() && json_point_count(*out) == 7);
-  }
-  // 同数量替换首点：8 → 8，但旧点 0 不在新集合里
-  {
-    MapTargetWriter w;
-    const uint64_t now = 10'000'000'000ULL;
-    CHECK(w.update(map_input_spaced(now)).has_value());
-    MapTargetInput in = map_input_spaced(now + 100'000'000ULL);
-    for (int i = 0; i < 7; i++) in.curve.points[i] = in.curve.points[i + 1];
-    in.curve.points[7] = {374220000 + 99, -1220840000 + 99, 99, 40, 200};
-    const auto out = w.update(in);
-    CHECK(out.has_value() && json_point_count(*out) == 8);
-    CHECK(out && out->find("37.4220000") == std::string::npos);  // 旧首点必须被清掉
-  }
-  // 7 → 8：删 1 个、加 2 个
-  {
-    MapTargetWriter w;
-    const uint64_t now = 10'000'000'000ULL;
-    MapTargetInput first = map_input_spaced(now);
-    first.curve.point_count = 7;
-    CHECK(w.update(first).has_value());
-    MapTargetInput in = map_input_spaced(now + 100'000'000ULL);
-    in.curve.points[6] = {374220000 + 50, -1220840000 + 50, 60, 40, 200};
-    in.curve.points[7] = {374220000 + 51, -1220840000 + 51, 70, 40, 200};
-    const auto out = w.update(in);
-    CHECK(out.has_value() && json_point_count(*out) == 8);
-  }
-}
-
-// N2：容差内同一点降速立即写；提速仍走 500 ms
-static void test_map_target_speed_change_cadence() {
-  MapTargetWriter w;
+static void test_map_target_urgent_change_rules() {
   const uint64_t now = 10'000'000'000ULL;
-  MapTargetInput first = map_input(now);
-  for (int i = 0; i < 8; i++) first.curve.points[i].target_speed_kph = 40;
-  CHECK(w.update(first).has_value());
+  // 1. max |k| 增大 < 5 节流；>= 5 立即写
+  {
+    MapTargetWriter w;
+    MapTargetInput base = map_input(now);
+    CHECK(w.update(base).has_value());
+    MapTargetInput small_inc = map_input(now + 100'000'000ULL);
+    small_inc.curve.curvature_per_m_x1e5[2] = 1254;  // +4 < 5
+    CHECK(!w.update(small_inc).has_value());
 
-  // 40 → 20 km/h：100 ms 内必须写
-  MapTargetInput slower = map_input(now + 100'000'000ULL);
-  for (int i = 0; i < 8; i++) slower.curve.points[i].target_speed_kph = 20;
-  const auto out = w.update(slower);
-  CHECK(out.has_value() && out->find("\"velocity\":5.556") != std::string::npos);
+    MapTargetInput sharp_inc = map_input(now + 150'000'000ULL);
+    sharp_inc.curve.curvature_per_m_x1e5[2] = 1255;  // +5 >= 5
+    CHECK(w.update(sharp_inc).has_value());
+  }
+  // 2. 近场 [0, 150 m] max |k| 下降 < 10 节流；>= 10 立即写
+  {
+    MapTargetWriter w;
+    MapTargetInput base = map_input(now);
+    CHECK(w.update(base).has_value());
+    MapTargetInput small_drop = map_input(now + 100'000'000ULL);
+    for (int i = 2; i <= 4; i++) small_drop.curve.curvature_per_m_x1e5[i] = 1241;  // 1250 -> 1241 (-9)
+    CHECK(!w.update(small_drop).has_value());
 
-  // 20 → 40 km/h：仍走 500 ms
-  MapTargetWriter w2;
-  MapTargetInput slow_first = map_input(now);
-  for (int i = 0; i < 8; i++) slow_first.curve.points[i].target_speed_kph = 20;
-  CHECK(w2.update(slow_first).has_value());
-  MapTargetInput faster = map_input(now + 100'000'000ULL);
-  for (int i = 0; i < 8; i++) faster.curve.points[i].target_speed_kph = 40;
-  CHECK(!w2.update(faster).has_value());
-  faster.now_ns = now + 500'000'000ULL;
-  faster.t_eof = faster.now_ns - 50'000'000ULL;
-  faster.last_reply_ns = faster.now_ns - 50'000'000ULL;
-  CHECK(w2.update(faster).has_value());
+    MapTargetInput large_drop = map_input(now + 150'000'000ULL);
+    for (int i = 2; i <= 4; i++) large_drop.curve.curvature_per_m_x1e5[i] = 1240;  // 1250 -> 1240 (-10)
+    CHECK(w.update(large_drop).has_value());
+  }
+  // 3. 远场 (> 150 m) max |k| 下降 >= 10 但仍 > 0 走 500 ms 节流；归零立即写
+  {
+    MapTargetWriter w;
+    MapTargetInput base = map_input(now);
+    base.curve.sample_count = 25;
+    base.curve.first_offset_dm = 0;
+    for (int i = 0; i < 25; i++) base.curve.curvature_per_m_x1e5[i] = 0;
+    base.curve.curvature_per_m_x1e5[20] = 500;  // d = 200 m (> 150 m)
+    CHECK(w.update(base).has_value());
 
-  // 容差匹配：点挪 0.3 m（27 × 1e-7 ≈ 0.30 m），速度也变
-  // 40 → 20：100 ms 内必须写
-  MapTargetWriter w3;
-  MapTargetInput base = map_input_spaced(now);
-  for (int i = 0; i < 8; i++) base.curve.points[i].target_speed_kph = 40;
-  CHECK(w3.update(base).has_value());
-  MapTargetInput moved_slower = map_input_spaced(now + 100'000'000ULL);
-  moved_slower.curve.points[0].latitude_deg_x1e7 += 27;  // ≈0.30 m，在 50 容差内
-  moved_slower.curve.points[0].target_speed_kph = 20;
-  const auto out_slower = w3.update(moved_slower);
-  CHECK(out_slower.has_value() && out_slower->find("\"velocity\":5.556") != std::string::npos);
+    MapTargetInput far_drop = base;
+    far_drop.now_ns = now + 100'000'000ULL;
+    far_drop.t_eof = far_drop.now_ns - 50'000'000ULL;
+    far_drop.curve.curvature_per_m_x1e5[20] = 400;  // -100 in far field, still > 0
+    CHECK(!w.update(far_drop).has_value());
 
-  // 20 → 40：100 ms 内不写
-  MapTargetWriter w4;
-  MapTargetInput slow_base = map_input_spaced(now);
-  for (int i = 0; i < 8; i++) slow_base.curve.points[i].target_speed_kph = 20;
-  CHECK(w4.update(slow_base).has_value());
-  MapTargetInput moved_faster = map_input_spaced(now + 100'000'000ULL);
-  moved_faster.curve.points[0].latitude_deg_x1e7 += 27;
-  moved_faster.curve.points[0].target_speed_kph = 40;
-  CHECK(!w4.update(moved_faster).has_value());
+    MapTargetInput all_zero = far_drop;
+    all_zero.now_ns = now + 150'000'000ULL;
+    all_zero.t_eof = all_zero.now_ns - 50'000'000ULL;
+    all_zero.curve.curvature_per_m_x1e5[20] = 0;  // max |k| -> 0
+    CHECK(w.update(all_zero).has_value());
+  }
+  // 4. spacing_m 变化立即写
+  {
+    MapTargetWriter w;
+    CHECK(w.update(map_input(now)).has_value());
+    MapTargetInput chg = map_input(now + 100'000'000ULL);
+    chg.curve.spacing_m = 5;
+    CHECK(w.update(chg).has_value());
+  }
 }
 
-// 坐标校验：纬度 200° 与 (0,0) 的点跳过（S5）
-static void test_map_target_skips_bad_point_coordinates() {
+static void test_map_target_120_samples_json() {
   MapTargetWriter w;
   MapTargetInput in = map_input();
-  in.curve.point_count = 3;
-  in.curve.points[0].latitude_deg_x1e7 = 200 * 10'000'000;   // 纬度 200°
-  in.curve.points[1].latitude_deg_x1e7 = 0;                  // (0,0) 视为未填
-  in.curve.points[1].longitude_deg_x1e7 = 0;
+  in.curve.sample_count = 120;
+  for (int i = 0; i < 120; i++) {
+    in.curve.curvature_per_m_x1e5[i] = int16_t(((i % 21) - 10) * 150);
+  }
   const auto out = w.update(in);
   CHECK(out.has_value());
   if (out) {
-    int points = 0;
-    for (size_t pos = 0; (pos = out->find("{\"latitude\"", pos)) != std::string::npos; pos++) points++;
-    CHECK(points == 1);  // 只有第 3 个点
-    CHECK(out->find("\"latitude\":37.4220002") != std::string::npos);
-    CHECK(out->find("\"latitude\":200.") == std::string::npos);
-    CHECK(out->find("\"latitude\":0.0000000") == std::string::npos);
+    CHECK(out->find("\"curvatures\":[-0.01500,") != std::string::npos);
+    // Identical 120-sample profile within 1 s does not rewrite
+    in.now_ns += 500'000'000ULL;
+    in.t_eof += 500'000'000ULL;
+    CHECK(!w.update(in).has_value());
   }
-}
-
-// R2：跨 ±180° 的 int32 相减不能溢出（-fsanitize=undefined 下验证）
-static void test_map_target_antimeridian_no_int_overflow() {
-  MapTargetWriter w;
-  const uint64_t now = 10'000'000'000ULL;
-  MapTargetInput first = map_input(now);
-  first.curve.point_count = 1;
-  first.curve.points[0].latitude_deg_x1e7 = 374220000;      // 纬度合法
-  first.curve.points[0].longitude_deg_x1e7 = 1799999900;    // +179.99999°
-  CHECK(w.update(first).has_value());
-
-  MapTargetInput second = map_input(now + 100'000'000ULL);
-  second.curve.point_count = 1;
-  second.curve.points[0].latitude_deg_x1e7 = 374220000;
-  second.curve.points[0].longitude_deg_x1e7 = -1799999900;  // -179.99999°
-  const auto out = w.update(second);  // 旧点被删除 → 立即写（差值走 int64）
-  CHECK(out.has_value() && json_point_count(*out) == 1);
-}
-
-// R4：容差内有多个候选时取最近的点；最近点降速必须判成降速
-static void test_map_target_tolerance_picks_nearest() {
-  MapTargetWriter w;
-  const uint64_t now = 10'000'000'000ULL;
-  MapTargetInput first = map_input(now);
-  first.curve.point_count = 1;
-  first.curve.points[0].latitude_deg_x1e7 = 374220000;
-  first.curve.points[0].target_speed_kph = 40;
-  CHECK(w.update(first).has_value());
-
-  MapTargetInput next = map_input(now + 100'000'000ULL);
-  next.curve.point_count = 2;
-  next.curve.points[0] = {374220030, -1220840000, 10, 40, 200};  // 远 40，速度不变（先命中）
-  next.curve.points[1] = {374220005, -1220840000, 10, 20, 200};  // 近 5，降速
-  const auto out = w.update(next);
-  CHECK(out.has_value() && out->find("\"velocity\":5.556") != std::string::npos);
-}
-
-// R5：一对一匹配；两个旧点靠得近、新集合只剩一个 → 另一个必须算删除（立即写）
-static void test_map_target_one_to_one_matching() {
-  MapTargetWriter w;
-  const uint64_t now = 10'000'000'000ULL;
-  MapTargetInput first = map_input(now);
-  first.curve.point_count = 2;
-  first.curve.points[0] = {374220000, -1220840000, 10, 40, 200};
-  first.curve.points[1] = {374220010, -1220840000, 20, 40, 200};  // 相距 10 单位
-  CHECK(w.update(first).has_value());
-
-  MapTargetInput next = map_input(now + 100'000'000ULL);
-  next.curve.point_count = 1;
-  next.curve.points[0] = {374220000, -1220840000, 10, 40, 200};
-  const auto out = w.update(next);
-  CHECK(out.has_value() && json_point_count(*out) == 1);  // 立即写，不等 500 ms
 }
 
 // AU-1：main.cc 的 reply 线程只调 NavLinkSession，宿主测试驱动同一个类（不再手抄 main 的接线）。
@@ -2554,14 +2476,14 @@ static bgm1::NavExt session_nav_ext() {
   return r.nav_ext;
 }
 
-// 连上并收到一条带 3 个弯道点的 REPLY → 已写出非空目标
+// 连上并收到一条带弯道剖面的 REPLY → 已写出非空目标
 static void session_connect_with_curve(NavLinkSession* session, uint64_t now_ns) {
   session->on_epoch(1, [&] { return link_tick(now_ns - 1'000'000'000ULL); });  // 连接建立（首拍写 []）
   session->take_pending();
   session->on_hello_ok();
   session->on_reply(now_ns, now_ns - 50'000'000ULL, session_nav_ext(), link_tick(now_ns));
   const auto pending = session->take_pending();
-  CHECK(pending.has_value() && json_point_count(*pending) == 3);
+  CHECK(pending.has_value() && pending->find("\"curvatures\":[0,0.02000,-0.02020]") != std::string::npos);
 }
 
 static void test_nav_link_session_clear_paths() {
@@ -2586,7 +2508,7 @@ static void test_nav_link_session_clear_paths() {
     if (!(cleared.has_value() && *cleared == "[]")) std::printf("  case: %s\n", c.name);
     CHECK(cleared.has_value() && *cleared == "[]");
     CHECK(!session.hello_seen());
-    // 重连窗口内第一条新 REPLY 前的空闲拍：连接已通，旧点不得写回
+    // 重连窗口内第一条新 REPLY 前的空闲拍：连接已通，旧曲线不得写回
     for (const uint64_t dt : {600'000'000ULL, 1'200'000'000ULL, 1'900'000'000ULL}) {
       session.on_idle(true, link_tick(now + dt));
       const auto idle = session.take_pending();
@@ -2600,10 +2522,10 @@ static void test_nav_link_session_live_reply_keeps_targets() {
   const uint64_t now = 10'000'000'000ULL;
   NavLinkSession session;
   session_connect_with_curve(&session, now);
-  // 链路正常、数据新鲜的空闲拍（无新 REPLY）：1 s 刷新仍是同样 3 点，不被清掉
+  // 链路正常、数据新鲜的空闲拍（无新 REPLY）：1 s 刷新仍是同样剖面，不被清掉
   session.on_idle(true, link_tick(now + 1'000'000'000ULL));
   const auto refreshed = session.take_pending();
-  CHECK(refreshed.has_value() && json_point_count(*refreshed) == 3);
+  CHECK(refreshed.has_value() && refreshed->find("\"curvatures\":[0,0.02000,-0.02020]") != std::string::npos);
   // 同一个 epoch 再次出现：不复位
   int ticks_taken = 0;
   const auto counting_tick = [&] {
@@ -2651,27 +2573,24 @@ static void test_nav_link_cache_reset_clears_old_curve() {
     return in;
   };
   const auto first = w.update(input_from_cache(now, true));
-  CHECK(first.has_value() && json_point_count(*first) == 3);
+  CHECK(first.has_value() && first->find("\"curvatures\":[0,0.02000,-0.02020]") != std::string::npos);
   CHECK(cache.nav_health_flags() == r.nav_ext.nav_health_flags);
 
   // fail()：cache.reset() + link=false 立即写 []
-  CHECK(cache.present_flags() == (bgm1::kNavPresentCurveAhead | bgm1::kNavPresentNavState) && cache.curve().point_count > 0);
+  CHECK(cache.present_flags() == (bgm1::kNavPresentCurveAhead | bgm1::kNavPresentNavState) && cache.curve().sample_count > 0);
   cache.reset();
   // AU-7：reset 必须真的清掉各字段（不能靠 t_eof=0 一个字段挡住新鲜度而掩盖其他字段残留）
-  CHECK(cache.present_flags() == 0 && cache.curve().point_count == 0 && cache.t_eof() == 0 &&
+  CHECK(cache.present_flags() == 0 && cache.curve().sample_count == 0 && cache.t_eof() == 0 &&
         cache.last_reply_ns() == 0 && cache.nav_health_flags() == 0);
   const auto cleared = w.update(input_from_cache(now, false));
   CHECK(cleared.has_value() && *cleared == "[]");
 
-  // 600 ms 后重连、第一条新 REPLY 还没到：即使 link=true，也**绝不能**把旧点写回
-  // （修复前：old cache 仍在 2 s 内 → 这里会写回 3 个旧点）
+  // 600 ms 后重连、第一条新 REPLY 还没到：即使 link=true，也**绝不能**把旧曲线写回
   const auto out = w.update(input_from_cache(now + 600'000'000ULL, true));
   CHECK(!out.has_value() || *out == "[]");
 }
 
-// AU-3 端到端：29/31 m 交替（每条 GNSS 换一次），目标不再被反复清空写回
-
-// AU-4：偏航重算 / 已离开路线时，车机不用 CURVE 点
+// AU-4：偏航重算 / 已离开路线时，车机不用 CURVE 剖面
 static void test_map_target_rerouting_and_route_ok() {
   expect_immediate_clear([](MapTargetInput* in, uint64_t) {
     in->nav_health_flags = bgm1::kNavHealthRerouting | bgm1::kNavHealthRouteOk;
@@ -2692,7 +2611,7 @@ static void test_map_target_rerouting_and_route_ok() {
     in.curve.curve_flags = 0x01;
     in.nav_health_flags = bgm1::kNavHealthRouteOk | bgm1::kNavHealthPhoneLocationOk;
     const auto out = w.update(in);
-    CHECK(out.has_value() && json_point_count(*out) == 8);
+    CHECK(out.has_value() && out->find("\"curvatures\":[") != std::string::npos);
   }
   // 沿当前道路前扫（bit1）且 route_ok=0：没有路线也可用，照常写
   {
@@ -2701,7 +2620,7 @@ static void test_map_target_rerouting_and_route_ok() {
     in.curve.curve_flags = 0x02;
     in.nav_health_flags = bgm1::kNavHealthPhoneLocationOk;
     const auto out = w.update(in);
-    CHECK(out.has_value() && json_point_count(*out) == 8);
+    CHECK(out.has_value() && out->find("\"curvatures\":[") != std::string::npos);
   }
 }
 
@@ -2714,15 +2633,14 @@ static void test_conn_epoch_tracker() {
   CHECK(!t.update(6));
 }
 
-// N10：点坐标每拍都变、点数不变，20 Hz × 10 s → 目标写 ≤21 次。
-// 距离内容更新仍不得超过 2 Hz。
-static void test_map_target_moving_points_cadence() {
+// 首偏移每拍推进（无急剧曲率跳变），20 Hz × 10 s → 目标写 ≤21 次（≤2 Hz）
+static void test_map_target_moving_profile_cadence() {
   MapTargetWriter w;
   uint64_t now = 1'000'000'000ULL;
   int writes = 0;
   for (int tick = 0; tick < 200; tick++, now += 50'000'000ULL) {
-    MapTargetInput in = map_input_spaced(now);
-    for (int i = 0; i < 8; i++) in.curve.points[i].latitude_deg_x1e7 += tick;
+    MapTargetInput in = map_input(now);
+    in.curve.first_offset_dm = int16_t(-185 + (tick % 100));
     if (w.update(in)) writes++;
   }
   CHECK(writes >= 1 && writes <= 21);  // 首次 + ≤2 Hz；10 s 窗口
@@ -2751,7 +2669,7 @@ static void test_clear_map_targets_ops() {
 }
 
 // =====================================================================
-// 下行分帧：REPLY 8480 B 分两次到达（切点在 NavExt 中间）→ 拼成整条
+// 下行分帧：REPLY 8624 B 分两次到达（切点在 NavExt 中间）→ 拼成整条
 // =====================================================================
 
 static void test_msg_framer_reply_split_inside_nav_ext() {
@@ -2760,16 +2678,17 @@ static void test_msg_framer_reply_split_inside_nav_ext() {
   r.t_eof = 123456789ULL;
   r.nav_ext.present_flags = bgm1::kNavPresentCurveAhead;
   r.nav_ext.nav_health_flags = bgm1::kNavHealthNavOk;
-  r.nav_ext.curve_ahead.point_count = 8;
-  for (int i = 0; i < 8; i++) {
-    r.nav_ext.curve_ahead.points[i] = {374220000 + i, -1220840000 - i, uint16_t(10 * i),
-                                       uint8_t(40 + i), uint8_t(200 + i)};
+  r.nav_ext.curve_ahead.sample_count = 120;
+  r.nav_ext.curve_ahead.spacing_m = 10;
+  r.nav_ext.curve_ahead.first_offset_dm = -185;
+  for (int i = 0; i < 120; i++) {
+    r.nav_ext.curve_ahead.curvature_per_m_x1e5[i] = int16_t(((i % 21) - 10) * 150);
   }
   std::vector<uint8_t> wire(bgm1::kReplyWireSize);
   CHECK(bgm1::pack_reply(r, wire.data(), wire.size()) == wire.size());
 
-  // 切点：NavExt 内、CURVE_AHEAD 第 2 个点中间（REPLY 8304 + 44 + 8 + 12 + 6）
-  const size_t cut = 8304 + 44 + 8 + 12 + 6;
+  // 切点：NavExt 内、CURVE_AHEAD 采样数组中间（REPLY 8304 + 44 + 8 + 120）
+  const size_t cut = 8304 + 44 + 8 + 120;
   CHECK(cut > bgm1::kReplyHdrSize && cut < wire.size());
 
   MsgFramer f;
@@ -2784,8 +2703,8 @@ static void test_msg_framer_reply_split_inside_nav_ext() {
   CHECK(m.type == bgm1::kTypeReply && m.size == bgm1::kReplyWireSize);
   bgm1::Reply out;
   CHECK(bgm1::parse_reply(f.data(), f.size(), &out) == bgm1::Err::kOk);
-  CHECK(out.frame_idx == 7 && out.nav_ext.curve_ahead.point_count == 8 &&
-        out.nav_ext.curve_ahead.points[7].curvature_per_m_x1e4 == 207);
+  CHECK(out.frame_idx == 7 && out.nav_ext.curve_ahead.sample_count == 120 &&
+        out.nav_ext.curve_ahead.curvature_per_m_x1e5[119] == ((119 % 21) - 10) * 150);
   f.consume(m.size);
   CHECK(f.next(&m) == MsgFramer::Result::kNeedMore);
 
@@ -2806,7 +2725,7 @@ static void test_msg_framer_reply_split_inside_nav_ext() {
   CHECK(g.next(&m) == MsgFramer::Result::kNeedMore);
 }
 
-// 旧 v2 REPLY（len 8280）在分帧处就判协议头非法（到不了 parse_reply）
+// 旧 v2 / v4 REPLY 在分帧处就判版本错误（到不了 parse_reply）
 static void test_msg_framer_rejects_v2_reply_header() {
   uint8_t hdr[bgm1::kMsgHdrSize] = {};
   hdr[0] = 'B'; hdr[1] = 'G'; hdr[2] = 'M'; hdr[3] = '1';
@@ -2821,12 +2740,14 @@ static void test_msg_framer_rejects_v2_reply_header() {
 }
 
 static void test_msg_framer_rejects_old_version_before_payload() {
-  for (const uint8_t type : {bgm1::kTypeHello, bgm1::kTypeReply, bgm1::kTypeErr}) {
-    uint8_t header[16] = {'B', 'G', 'M', '1', 3, type};
-    MsgFramer framer;
-    framer.append(header, sizeof header);
-    MsgFramer::Message message;
-    CHECK(framer.next(&message) == MsgFramer::Result::kBadVersion);
+  for (const uint8_t ver : {uint8_t(3), uint8_t(4)}) {
+    for (const uint8_t type : {bgm1::kTypeHello, bgm1::kTypeReply, bgm1::kTypeErr}) {
+      uint8_t header[16] = {'B', 'G', 'M', '1', ver, type};
+      MsgFramer framer;
+      framer.append(header, sizeof header);
+      MsgFramer::Message message;
+      CHECK(framer.next(&message) == MsgFramer::Result::kBadVersion);
+    }
   }
 }
 
@@ -2844,29 +2765,25 @@ int main() {
   test_encoder_bitrate_selection();
   test_map_target_invalid_refresh_cadence();
   test_msg_framer_rejects_old_version_before_payload();
-  test_v4_frame_contract();
+  test_v5_frame_contract();
   test_map_target_phone_deadline_envelope();
-  test_map_target_distance_refresh();
+  test_map_target_offset_refresh();
   test_nav_state_snapshot_present_flags();
   test_nav_state_snapshot_values();
   test_nav_state_snapshot_curve_flags();
-  test_nav_state_snapshot_ignores_curve_coordinates();
-  test_map_target_eight_points_json();
+  test_nav_state_snapshot_horizon_derivation();
+  test_map_target_profile_json();
   test_map_target_count_zero_is_empty_list();
   test_map_target_invalid_paths_clear_immediately();
-  test_map_target_removed_point_writes_immediately();
-  test_map_target_speed_change_cadence();
-  test_map_target_skips_bad_point_coordinates();
-  test_map_target_antimeridian_no_int_overflow();
-  test_map_target_tolerance_picks_nearest();
-  test_map_target_one_to_one_matching();
+  test_map_target_urgent_change_rules();
+  test_map_target_120_samples_json();
   test_nav_link_cache_reset_clears_old_curve();
   test_conn_epoch_tracker();
   test_map_target_rerouting_and_route_ok();
   test_nav_link_session_clear_paths();
   test_nav_link_session_live_reply_keeps_targets();
   test_nav_link_session_pending_is_last_decision();
-  test_map_target_moving_points_cadence();
+  test_map_target_moving_profile_cadence();
   test_map_target_reply_rate_cpu();
   test_clear_map_targets_ops();
   test_msg_framer_reply_split_inside_nav_ext();
@@ -2902,7 +2819,7 @@ int main() {
 
   test_frame_codec_roundtrip();
   test_reply_err_roundtrip();
-  test_v4_normalisation();
+  test_v5_normalisation();
   test_cross_end_golden();
 
   test_warp_golden();

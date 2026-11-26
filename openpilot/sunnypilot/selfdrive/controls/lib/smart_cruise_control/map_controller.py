@@ -24,6 +24,20 @@ TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you rea
                      # done to keep the distance calculations consistent but results in the offset actually being less
                      # time than specified depending on how much of a speed differential there is between v_ego and the
                      # target velocity.
+TARGET_LAT_ACCEL = 2.0  # m/s^2 matches legacy BGM1 v4 phone target lateral acceleration
+
+
+def _smooth_curvatures(raw: list[float], window: int = 5) -> list[float]:
+  n = len(raw)
+  if n <= 1 or window <= 1:
+    return [float(k) for k in raw]
+  half = window // 2
+  out: list[float] = []
+  for i in range(n):
+    win = [float(raw[min(max(j, 0), n - 1)]) for j in range(i - half, i + half + 1)]
+    win.sort()
+    out.append(win[len(win) // 2])
+  return out
 
 
 def calculate_accel(t, target_jerk, a_ego):
@@ -56,13 +70,12 @@ class SmartCruiseControlMap:
     self.is_active = False
     self.state = MapState.disabled
     self.v_cruise = 0
-    self.target_lat = 0.0
-    self.target_lon = 0.0
+    self.target_d: float | None = None
     self.frame = -1
     self.clock = clock or (time.monotonic_ns if platform.system() == "Darwin" else
                            lambda: time.clock_gettime_ns(time.CLOCK_BOOTTIME))
     self.last_bad_log_ns = 0
-    self.target_velocities = []
+    self.forward_targets: list[tuple[float, float]] = []
     self.snapshot = None
     self.sample_time_ns = 0
     self.travelled_m = 0.0
@@ -84,9 +97,9 @@ class SmartCruiseControlMap:
 
   def clear_targets(self):
     self.snapshot = None
-    self.target_velocities = []
+    self.forward_targets = []
     self.v_target = 0.0
-    self.target_lat = self.target_lon = 0.0
+    self.target_d = None
 
   def read_targets(self, now_ns):
     raw = self.mem_params.get("MapTargetVelocities")
@@ -97,25 +110,27 @@ class SmartCruiseControlMap:
       if snapshot == []:
         return None
       if not isinstance(snapshot, dict):
-        raise ValueError("expected distance envelope")
+        raise ValueError("expected curvature envelope")
+      if "points" in snapshot:
+        raise ValueError("unsupported legacy points format")
       sample_ns, valid_until_ns = snapshot["sample_time_ns"], snapshot["valid_until_ns"]
       if (type(sample_ns) is not int or type(valid_until_ns) is not int or
           not 0 < sample_ns <= now_ns <= valid_until_ns <= sample_ns + 2_000_000_000):
         raise ValueError("invalid or expired sample times")
-      points = snapshot["points"]
-      if not isinstance(points, list) or not 1 <= len(points) <= 8:
-        raise ValueError("invalid point count")
-      previous_distance = 0
-      for point in points:
-        if not isinstance(point, dict):
-          raise ValueError("invalid point")
-        lat, lon, distance, velocity = (point[key] for key in ("latitude", "longitude", "distance_m", "velocity"))
-        if not all(type(value) in (int, float) and math.isfinite(value) for value in (lat, lon, distance, velocity)):
-          raise ValueError("non-finite point")
-        if (not -90 <= lat <= 90 or not -180 <= lon <= 180 or (lat == 0 and lon == 0) or
-            not previous_distance <= distance <= 600 or velocity <= 0):
-          raise ValueError("invalid coordinates, distance or velocity")
-        previous_distance = distance
+      spacing_m = snapshot["spacing_m"]
+      if type(spacing_m) is not int or not 1 <= spacing_m <= 50:
+        raise ValueError("invalid spacing_m")
+      first_offset_m = snapshot["first_offset_m"]
+      if (type(first_offset_m) not in (int, float) or
+          not math.isfinite(first_offset_m) or
+          not -100.0 <= first_offset_m <= 100.0):
+        raise ValueError("invalid first_offset_m")
+      curvatures = snapshot["curvatures"]
+      if not isinstance(curvatures, list) or not 1 <= len(curvatures) <= 120:
+        raise ValueError("invalid curvature sample count")
+      for k in curvatures:
+        if type(k) not in (int, float) or not math.isfinite(k) or abs(k) > 1.0:
+          raise ValueError("invalid curvature value")
       return snapshot
     except (ValueError, TypeError, KeyError, OverflowError, RecursionError) as error:
       if now_ns - self.last_bad_log_ns >= 5_000_000_000 or self.last_bad_log_ns == 0:
@@ -137,9 +152,13 @@ class SmartCruiseControlMap:
       return
     sample_ns = snapshot["sample_time_ns"]
     if sample_ns < self.sample_time_ns or (sample_ns == self.sample_time_ns and
-        (self.snapshot is None or snapshot["points"] != self.snapshot["points"])):
+        (self.snapshot is None or
+         snapshot["spacing_m"] != self.snapshot["spacing_m"] or
+         snapshot["first_offset_m"] != self.snapshot["first_offset_m"] or
+         snapshot["curvatures"] != self.snapshot["curvatures"])):
       self.clear_targets()
       return
+    delta_travelled_m = self.v_ego * ((now_ns - previous_ns) / 1e9) if previous_ns is not None else 0.0
     if sample_ns > self.sample_time_ns:
       self.sample_time_ns = sample_ns
       self.travelled_m = self.v_ego * ((now_ns - sample_ns) / 1e9)
@@ -149,29 +168,34 @@ class SmartCruiseControlMap:
       if now_ns > snapshot["valid_until_ns"]:
         self.clear_targets()
         return
-      self.travelled_m += self.v_ego * ((now_ns - previous_ns) / 1e9)
+      self.travelled_m += delta_travelled_m
     self.snapshot = snapshot
-    self.target_velocities = snapshot["points"]
-    forward_points = self.target_velocities
-    forward_distances = [max(0.0, point["distance_m"] - self.travelled_m) for point in forward_points]
 
+    spacing_m = snapshot["spacing_m"]
+    first_offset_m = float(snapshot["first_offset_m"])
+    k_smooth = _smooth_curvatures(snapshot["curvatures"])
+
+    self.forward_targets = []
     # find velocities that we are within the distance we need to adjust for
-    valid_velocities = []
-    for i in range(len(forward_points)):
-      target_velocity = forward_points[i]
-      tlat = target_velocity["latitude"]
-      tlon = target_velocity["longitude"]
-      tv = target_velocity["velocity"]
+    valid_velocities: list[tuple[float, float]] = []
+    for i, k in enumerate(k_smooth):
+      d = first_offset_m + i * spacing_m - self.travelled_m
+      if d < 0.0:
+        continue
+      abs_k = abs(k)
+      if abs_k <= 1e-6:
+        continue
+      tv = math.sqrt(TARGET_LAT_ACCEL / abs_k)
+      if tv < 100.0:
+        self.forward_targets.append((float(d), tv))
       if tv > self.v_ego:
         continue
-
-      d = forward_distances[i]
 
       a_diff = (self.a_ego - TARGET_ACCEL)
       accel_t = abs(a_diff / TARGET_JERK)
       min_accel_v = calculate_velocity(accel_t, TARGET_JERK, self.a_ego, self.v_ego)
 
-      max_d = 0
+      max_d = 0.0
       if tv > min_accel_v:
         # calculate time needed based on target jerk
         a = 0.5 * TARGET_JERK
@@ -196,38 +220,34 @@ class SmartCruiseControlMap:
         max_d += calculate_distance(t, 0, TARGET_ACCEL, min_accel_v)
 
       if d < max_d + tv * TARGET_OFFSET:
-        valid_velocities.append((float(tv), tlat, tlon))
+        valid_velocities.append((tv, float(d)))
 
-    # Find the smallest velocity we need to adjust for
+    # Find the smallest velocity we need to adjust for (tie-break nearest distance)
     min_v = 100.0
-    target_lat = 0.0
-    target_lon = 0.0
-    for tv, lat, lon in valid_velocities:
-      if tv < min_v:
+    min_d: float | None = None
+    for tv, d in valid_velocities:
+      if tv < min_v or (tv == min_v and (min_d is None or d < min_d)):
         min_v = tv
-        target_lat = lat
-        target_lon = lon
+        min_d = d
 
-    if self.v_target < min_v and not (self.target_lat == 0 and self.target_lon == 0):
-      for i in range(len(forward_points)):
-        target_velocity = forward_points[i]
-        tlat = target_velocity["latitude"]
-        tlon = target_velocity["longitude"]
-        tv = target_velocity["velocity"]
-        if tv > self.v_ego:
-          continue
-
-        if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
+    if self.v_target < min_v and self.target_d is not None:
+      rem_d = self.target_d - delta_travelled_m
+      if rem_d >= 0.0:
+        max_d_err = max(float(spacing_m), 15.0)
+        max_v_err = max(0.5, self.v_target * 0.05)
+        best_d: float | None = None
+        best_err = float("inf")
+        for d, tv in self.forward_targets:
+          err = abs(d - rem_d)
+          if err <= max_d_err and tv <= self.v_ego and abs(tv - self.v_target) <= max_v_err and err < best_err:
+            best_err = err
+            best_d = d
+        if best_d is not None:
+          self.target_d = best_d
           return
 
-      # not found so let's reset
-      self.v_target = 0.0
-      self.target_lat = 0.0
-      self.target_lon = 0.0
-
     self.v_target = min_v
-    self.target_lat = target_lat
-    self.target_lon = target_lon
+    self.target_d = min_d if valid_velocities else None
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, TURNING

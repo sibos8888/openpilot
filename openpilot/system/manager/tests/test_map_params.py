@@ -6,7 +6,7 @@ from openpilot.system.manager import map_params
 def test_clear_map_params_removes_targets(tmp_path):
   # 临时目录当 mem Params：不碰 Mac 的默认 Params 目录，也不碰 /dev/shm
   mem = Params(str(tmp_path / "params"))
-  mem.put("MapTargetVelocities", '{"sample_time_ns":1,"valid_until_ns":2,"points":[{"latitude":1,"longitude":2,"distance_m":40,"velocity":10}]}',
+  mem.put("MapTargetVelocities", '{"sample_time_ns":1,"valid_until_ns":2,"spacing_m":10,"first_offset_m":0.0,"curvatures":[0.01700]}',
           block=True)
   mem.put_bool("SmartCruiseControlMap", True, block=True)  # PERSISTENT，不应被误删
 
@@ -37,7 +37,7 @@ def test_darwin_never_uses_mem_params(monkeypatch):
 
 def _mem_with_targets(tmp_path):
   mem = Params(str(tmp_path / "params"))
-  mem.put("MapTargetVelocities", '{"sample_time_ns":1,"valid_until_ns":2,"points":[{"latitude":1,"longitude":2,"distance_m":40,"velocity":10}]}',
+  mem.put("MapTargetVelocities", '{"sample_time_ns":1,"valid_until_ns":2,"spacing_m":10,"first_offset_m":0.0,"curvatures":[0.01700]}',
           block=True)
   mem.put_bool("SmartCruiseControlMap", True, block=True)
   return mem

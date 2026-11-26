@@ -29,6 +29,7 @@ C3XL (unreleased)
 * Panda SPI communication adopts upstream CRC32-protected requests, response replay for retries, and chip-select synchronization; startup recovers incompatible firmware through the ST bootloader while preserving diagnostic shutdown handling.
 * Reset the internal panda after DFU recovery so C3XL starts the new bootstub without timing out and repeating the flash cycle.
 * Clear I2C arbitration-loss flags without tracking the write-one-to-clear register as persistent state, fixing the C3XL panda's false `registerDivergent` fault.
+* Upgrade the BGM1 protocol to v5 (304 B `NavExt` / 8624 B `REPLY` carrying a 120-sample 10 m raw signed curvature profile) and adapt `SmartCruiseControlMap` to smooth and compute curve speeds locally while keeping C3XL's existing longitudinal tuning unchanged.
 
 sunnypilot Version 2026.002.000 (2026-06-28)
 ========================

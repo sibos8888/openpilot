@@ -782,7 +782,7 @@ class Bigmodeld {
     link_state_write();
   }
 
-  // REPLY → navStateSP（20 Hz，rlog / UI）。CURVE 只镜像点距离 / 目标速度 / 曲率，不含经纬度。
+  // REPLY → navStateSP（20 Hz，rlog / UI）。CURVE 只镜像等距曲率剖面，不含经纬度。
   void publish_nav_state(const bgm1::Reply& r) {
     const NavStateSnapshot s = nav_state_snapshot_from_reply(r);
     MessageBuilder msg;
@@ -835,22 +835,20 @@ class Bigmodeld {
     }
     if (s.has_curve_ahead) {
       auto curve = ns.initCurveAhead();
-      const uint8_t max_points = uint8_t(bgm1::kCurveMaxPoints);
-      const uint8_t count = s.curve_ahead.point_count > max_points ? max_points
-                                                                   : s.curve_ahead.point_count;
+      const uint8_t max_samples = uint8_t(bgm1::kCurveMaxSamples);
+      const uint8_t count = s.curve_ahead.sample_count > max_samples ? max_samples
+                                                                     : s.curve_ahead.sample_count;
       curve.setPointCount(count);
-      curve.setMaxLateralAccelerationMPerS2(s.curve_ahead.max_lateral_acceleration_m_per_s2);
       curve.setHorizonDistanceM(s.curve_ahead.horizon_distance_m);
       curve.setAgeMs(s.curve_ahead.age_ms);
       curve.setAlongRoute(s.curve_ahead.along_route);
       curve.setRoadLookahead(s.curve_ahead.road_lookahead);
       curve.setSmoothed(s.curve_ahead.smoothed);
-      auto points = curve.initPoints(count);
+      curve.setSpacingM(s.curve_ahead.spacing_m);
+      curve.setFirstOffsetM(s.curve_ahead.first_offset_m);
+      auto curvatures = curve.initCurvaturesPerM(count);
       for (uint8_t i = 0; i < count; i++) {
-        auto p = points[i];
-        p.setDistanceAlongRouteM(s.curve_ahead.points[i].distance_along_route_m);
-        p.setTargetSpeedKph(s.curve_ahead.points[i].target_speed_kph);
-        p.setCurvaturePerM(s.curve_ahead.points[i].curvature_per_m);
+        curvatures.set(i, s.curve_ahead.curvatures_per_m[i]);
       }
     }
     if (s.has_nav_debug) {
